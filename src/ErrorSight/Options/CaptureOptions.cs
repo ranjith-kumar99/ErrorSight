@@ -1,0 +1,38 @@
+namespace ErrorSight.Options;
+
+/// <summary>Limits for runtime value capture. The defaults keep capture cheap and bounded.</summary>
+public sealed class CaptureOptions
+{
+    /// <summary>Instrumented frames captured per exception, innermost first. Default: 5.</summary>
+    public int MaxFramesPerException { get; set; } = 5;
+
+    /// <summary>How deep object graphs are walked (<c>customer.Address.City</c> is depth 2). Default: 3.</summary>
+    public int MaxDepth { get; set; } = 3;
+
+    /// <summary>Members captured per object. Default: 20.</summary>
+    public int MaxMembersPerObject { get; set; } = 20;
+
+    /// <summary>Elements captured per collection (the full count is always reported). Default: 5.</summary>
+    public int MaxCollectionItems { get; set; } = 5;
+
+    /// <summary>Longer strings are truncated. Default: 256.</summary>
+    public int MaxStringLength { get; set; } = 256;
+
+    /// <summary>
+    /// Process-wide ceiling on frame captures per second, protecting against exception storms.
+    /// 0 disables the limit. Default: 200.
+    /// </summary>
+    public int MaxCapturesPerSecond { get; set; } = 200;
+
+    /// <summary>
+    /// Also capture private fields and non-public auto-properties. Default: false — only public
+    /// auto-properties and public fields are captured.
+    /// </summary>
+    public bool IncludePrivateFields { get; set; }
+
+    /// <summary>
+    /// Return false to skip capture for an exception. Default skips OperationCanceledException,
+    /// which is normal control flow (request aborted, timeout).
+    /// </summary>
+    public Func<Exception, bool> ShouldCapture { get; set; } = static ex => ex is not OperationCanceledException;
+}

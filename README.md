@@ -1,13 +1,13 @@
-# ExceptionLens
+# ErrorSight
 
 **Root-cause diagnostics for .NET exceptions, delivered through OpenTelemetry.**
 
 OpenTelemetry gives you the pipeline: your spans already carry `exception.type`, `exception.message` and
-`exception.stacktrace`. ExceptionLens adds the diagnosis: *which* expression was null, the runtime values at
+`exception.stacktrace`. ErrorSight adds the diagnosis: *which* expression was null, the runtime values at
 the throw site (masked), and the exact source location. Nothing to write in your code.
 
 ```
-dotnet add package ExceptionLens
+dotnet add package ErrorSight
 ```
 
 ```csharp
@@ -16,7 +16,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddAspNetCoreInstrumentation().AddOtlpExporter());
 
-builder.Services.AddExceptionLens();   // ← the only line you add
+builder.Services.AddErrorSight();   // ← the only line you add
 
 var app = builder.Build();
 app.Run();
@@ -42,23 +42,23 @@ This is the server span as the OpenTelemetry console exporter prints it (real ou
 Activity.DisplayName:        POST /orders
 Activity.Tags:
     ...
-    exceptionlens.cause.type: System.NullReferenceException
-    exceptionlens.cause.expression: order.Customer.Address
-    exceptionlens.cause.location: Program.cs:28
-    exceptionlens.cause.method: OrderService.ProcessOrder
+    errorsight.cause.type: System.NullReferenceException
+    errorsight.cause.expression: order.Customer.Address
+    errorsight.cause.location: Program.cs:28
+    errorsight.cause.method: OrderService.ProcessOrder
 Activity.Events:
-    exceptionlens.exception.diagnosed
+    errorsight.exception.diagnosed
         exception.type: System.NullReferenceException
         exception.message: Object reference not set to an instance of an object.
-        exceptionlens.null.expression: order.Customer.Address
-        exceptionlens.null.chain: order → Customer → Address
-        exceptionlens.failing_expression: order.Customer.Address.City.Name
-        exceptionlens.source.file: Program.cs
-        exceptionlens.source.line: 28
-        exceptionlens.method: OrderService.ProcessOrder
-        exceptionlens.cause: order.Customer.Address is null.
-        exceptionlens.suggestion: Check whether order.Customer.Address is initialised before accessing its members.
-        exceptionlens.values: {"this":"OrderService { }","order":"Order { Id = 1837, Customer = {…} }",
+        errorsight.null.expression: order.Customer.Address
+        errorsight.null.chain: order → Customer → Address
+        errorsight.failing_expression: order.Customer.Address.City.Name
+        errorsight.source.file: Program.cs
+        errorsight.source.line: 28
+        errorsight.method: OrderService.ProcessOrder
+        errorsight.cause: order.Customer.Address is null.
+        errorsight.suggestion: Check whether order.Customer.Address is initialised before accessing its members.
+        errorsight.values: {"this":"OrderService { }","order":"Order { Id = 1837, Customer = {…} }",
                                "paymentToken":"***","city":null,
                                "order.Customer":"Customer { Name = \"Jane Doe\", Email = ***, Address = null }",
                                "order.Customer.Address":null}
@@ -70,8 +70,8 @@ In Jaeger, Grafana Tempo, Azure Monitor, Datadog, Honeycomb, or anything else be
 HTTP POST /orders
   └── span
         ├── exception.type / exception.message / exception.stacktrace   (unchanged)
-        ├── exceptionlens.cause.expression = order.Customer.Address       (searchable attribute)
-        └── event exceptionlens.exception.diagnosed
+        ├── errorsight.cause.expression = order.Customer.Address       (searchable attribute)
+        └── event errorsight.exception.diagnosed
               ├── null.expression   order.Customer.Address
               ├── source            Program.cs:28
               └── values            order, paymentToken = ***, ...
@@ -83,18 +83,18 @@ The standard `exception.*` attributes and the `exception` event are never modifi
 
 | Attribute | Example |
 |---|---|
-| `exceptionlens.cause.type` | `System.NullReferenceException` |
-| `exceptionlens.cause.expression` | `order.Customer.Address` |
-| `exceptionlens.cause.location` | `OrderService.cs:42` |
-| `exceptionlens.cause.method` | `OrderService.ProcessOrder` |
+| `errorsight.cause.type` | `System.NullReferenceException` |
+| `errorsight.cause.expression` | `order.Customer.Address` |
+| `errorsight.cause.location` | `OrderService.cs:42` |
+| `errorsight.cause.method` | `OrderService.ProcessOrder` |
 
-### Event `exceptionlens.exception.diagnosed`
+### Event `errorsight.exception.diagnosed`
 
-`exception.type`, `exception.message`, `exceptionlens.null.expression`, `exceptionlens.null.chain`,
-`exceptionlens.null.candidates` (when the culprit is ambiguous), `exceptionlens.failing_expression`,
-`exceptionlens.source.file`, `exceptionlens.source.line`, `exceptionlens.method`, `exceptionlens.cause`,
-`exceptionlens.suggestion`, `exceptionlens.values` (masked JSON), plus `exceptionlens.parameter`,
-`exceptionlens.missing_key`, `exceptionlens.collection` and `exceptionlens.index` when they apply.
+`exception.type`, `exception.message`, `errorsight.null.expression`, `errorsight.null.chain`,
+`errorsight.null.candidates` (when the culprit is ambiguous), `errorsight.failing_expression`,
+`errorsight.source.file`, `errorsight.source.line`, `errorsight.method`, `errorsight.cause`,
+`errorsight.suggestion`, `errorsight.values` (masked JSON), plus `errorsight.parameter`,
+`errorsight.missing_key`, `errorsight.collection` and `errorsight.index` when they apply.
 
 It is not only for `NullReferenceException`. The same captured values explain `KeyNotFoundException` (the key
 variable and the dictionary), `IndexOutOfRangeException`/`ArgumentOutOfRangeException` (collection, index and
@@ -104,11 +104,11 @@ length), `ArgumentNullException`, LINQ `InvalidOperationException`s, and any exc
 ## How it works
 
 The CLR does not record *which* reference was null, and by the time a `catch` block runs, the stack has unwound
-and local variables are gone. So ExceptionLens captures them *while the exception is being thrown*, in two
+and local variables are gone. So ErrorSight captures them *while the exception is being thrown*, in two
 parts:
 
 ```
-                  your code                              ExceptionLens
+                  your code                              ErrorSight
 ┌──────────────────────────────────────┐
 │ build:  csc → obj/App.dll ──────────────▶ weaver (MSBuild, ships in the package)
 │                                      │     adds an exception *filter* to your methods
@@ -134,7 +134,7 @@ parts:
    returns `false`, so the exception keeps propagating: same object, same type, same stack trace. Snapshots
    never execute your code (no property getters or `ToString()` calls; fields are read directly), so there are
    no side effects such as EF Core lazy loading. Masking is applied during capture.
-3. **Automatic detection.** ExceptionLens hooks the same ASP.NET Core diagnostic events that OpenTelemetry's
+3. **Automatic detection.** ErrorSight hooks the same ASP.NET Core diagnostic events that OpenTelemetry's
    ASP.NET Core instrumentation uses, plus `Activity.AddException` from any library or `ActivitySource`. It
    enriches the active span before it ends. It does not depend on the OpenTelemetry SDK, because spans are
    plain `System.Diagnostics.Activity` objects.
@@ -161,7 +161,7 @@ word-aware: `apiKey`, `X-Api-Key` and `userPassword` match, while `shipping` doe
 
 The following attributes are honoured on properties, fields, parameters and whole types:
 
-- ExceptionLens's own `[Sensitive]`.
+- ErrorSight's own `[Sensitive]`.
 - Any attribute named `SensitiveAttribute`, `SensitiveDataAttribute`, `PersonalDataAttribute` or
   `ProtectedPersonalDataAttribute`. This includes ASP.NET Core Identity's attributes.
 - Any Microsoft.Extensions.Compliance `DataClassificationAttribute`.
@@ -175,7 +175,7 @@ public class Customer
 ```
 
 ```csharp
-builder.Services.AddExceptionLens(o =>
+builder.Services.AddErrorSight(o =>
 {
     o.Masking.Mode = MaskingMode.All;              // SensitiveOnly (default) | All | None
     o.Masking.Style = MaskStyle.Hash;              // Redact "***" (default) | Hash "sha256:1a2b3c4d" | Partial "***1234"
@@ -187,12 +187,12 @@ builder.Services.AddExceptionLens(o =>
 ```
 
 `MaskingMode.All` is a production-safe setting. Every value becomes its type or `***`, but null-ness is kept,
-so ExceptionLens still reports `order.Customer.Address is null`.
+so ErrorSight still reports `order.Customer.Address is null`.
 
 ## Options
 
 ```csharp
-builder.Services.AddExceptionLens(o =>
+builder.Services.AddErrorSight(o =>
 {
     o.CaptureRuntimeValues = true;   // build-time capture of params/locals (default: true)
     o.CaptureSourceLocation = true;  // file, line, method (default: true)
@@ -215,16 +215,16 @@ builder.Services.AddExceptionLens(o =>
 
 | Scope | How |
 |---|---|
-| Whole project | `<ExceptionLensWeave>false</ExceptionLensWeave>` in the `.csproj` |
-| Test projects | Not woven by default (`IsTestProject`); set `<ExceptionLensWeave>true</ExceptionLensWeave>` to opt in |
-| Assembly | `[assembly: ExceptionLens.ExceptionLensIgnore]` |
-| Type or method (hot paths) | `[ExceptionLensIgnore]` |
-| Tiny methods | Skipped automatically when the IL body is ≤ 16 bytes (`<ExceptionLensMinILSize>`), so the JIT keeps inlining them |
+| Whole project | `<ErrorSightWeave>false</ErrorSightWeave>` in the `.csproj` |
+| Test projects | Not woven by default (`IsTestProject`); set `<ErrorSightWeave>true</ErrorSightWeave>` to opt in |
+| Assembly | `[assembly: ErrorSight.ErrorSightIgnore]` |
+| Type or method (hot paths) | `[ErrorSightIgnore]` |
+| Tiny methods | Skipped automatically when the IL body is ≤ 16 bytes (`<ErrorSightMinILSize>`), so the JIT keeps inlining them |
 | At runtime | `o.CaptureRuntimeValues = false` |
 
 ## Performance
 
-Measured with `benchmarks/ExceptionLens.Benchmarks` (.NET 8, Release). It compares identical code with and
+Measured with `benchmarks/ErrorSight.Benchmarks` (.NET 8, Release). It compares identical code with and
 without instrumentation:
 
 | | Not instrumented | Instrumented |
@@ -248,7 +248,7 @@ without instrumentation:
   Everything else still is: parameters, `this`, fields, and locals that live longer. An eliminated `foreach`
   variable is reported as an element of its collection, e.g. `customers[…].Address`.
 - When a receiver cannot be evaluated (a method-call result such as `GetCustomer().Address`, or beyond the
-  depth limit), ExceptionLens reports the possible culprits in `exceptionlens.null.candidates` instead of
+  depth limit), ErrorSight reports the possible culprits in `errorsight.null.candidates` instead of
   guessing.
 - Not instrumented yet: strong-name-signed assemblies (skipped with a build warning), third-party DLLs,
   VB/F#, and NativeAOT/trimmed apps.
@@ -264,14 +264,14 @@ Console.WriteLine(new TextExceptionFormatter().Format(diagnostics));  // human-r
 var json = new JsonExceptionFormatter().Format(diagnostics);           // includes per-frame values
 ```
 
-Captured frames can be read with `ExceptionLensRuntime.TryGetCapturedFrames(exception, out var frames)`.
+Captured frames can be read with `ErrorSightRuntime.TryGetCapturedFrames(exception, out var frames)`.
 
-The optional `app.UseExceptionLens()` middleware logs the text banner through `ILogger` for failed requests. It
+The optional `app.UseErrorSight()` middleware logs the text banner through `ILogger` for failed requests. It
 can also return a problem-details body (`IncludeDiagnosticsInResponse`, meant for development only). Span
 enrichment does not need it.
 
 Outside a generic host (a plain `ServiceCollection`), start the hooks yourself:
-`provider.GetRequiredService<ExceptionLensTelemetry>().Start()`.
+`provider.GetRequiredService<ErrorSightTelemetry>().Start()`.
 
 ## Custom analyzers
 
@@ -293,12 +293,12 @@ builder.Services.AddExceptionAnalyzer<MyDomainExceptionAnalyzer>();
 ## Repository layout
 
 ```
-src/ExceptionLens           runtime: capture store, masking, root-cause engine, OpenTelemetry hooks
-src/ExceptionLens/build     MSBuild targets shipped in the package (build/ and buildTransitive/)
-src/ExceptionLens.Weaver    build-time IL weaver (Mono.Cecil), shipped in the package's tools/weaver
+src/ErrorSight           runtime: capture store, masking, root-cause engine, OpenTelemetry hooks
+src/ErrorSight/build     MSBuild targets shipped in the package (build/ and buildTransitive/)
+src/ErrorSight.Weaver    build-time IL weaver (Mono.Cecil), shipped in the package's tools/weaver
 src/Shared                  metadata format shared by weaver and runtime
-tests/ExceptionLens.Samples plain application code, woven by the real targets
-tests/ExceptionLens.Tests   capture, semantics, masking and end-to-end OpenTelemetry tests
+tests/ErrorSight.Samples plain application code, woven by the real targets
+tests/ErrorSight.Tests   capture, semantics, masking and end-to-end OpenTelemetry tests
 benchmarks/                 overhead measurements
 ```
 

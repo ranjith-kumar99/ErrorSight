@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Realistic application code, instrumented by the real ErrorSight build targets exactly as a
+    consumer of the NuGet package would be — except that the weaver comes from this repository.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>SampleApp</RootNamespace>
+    <ErrorSightWeaverPath>$(MSBuildThisFileDirectory)..\..\src\ErrorSight.Weaver\bin\$(Configuration)\net8.0\ErrorSight.Weaver.dll</ErrorSightWeaverPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ErrorSight\ErrorSight.csproj" />
+    <ProjectReference Include="..\..\src\ErrorSight.Weaver\ErrorSight.Weaver.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Import Project="..\..\src\ErrorSight\build\ErrorSight.targets" />
+
+</Project>

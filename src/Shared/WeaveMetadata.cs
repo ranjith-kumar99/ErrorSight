@@ -1,11 +1,11 @@
-// Shared between ExceptionLens (runtime reader) and ExceptionLens.Weaver (writer).
+// Shared between ErrorSight (runtime reader) and ErrorSight.Weaver (writer).
 // Compiled into both assemblies via <Compile Include="..\Shared\*.cs" />.
 
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-namespace ExceptionLens.Runtime.Metadata;
+namespace ErrorSight.Runtime.Metadata;
 
 /// <summary>What a captured slot represents in the source method.</summary>
 internal enum SlotKind : byte
@@ -91,8 +91,8 @@ internal sealed class WovenMethod
 
 internal static class WeaveMetadataSerializer
 {
-    public const string ResourceName = "ExceptionLens.Metadata.bin";
-    private const int Magic = 0x444D4C45; // "ELMD"
+    public const string ResourceName = "ErrorSight.Metadata.bin";
+    private const int Magic = 0x444D5345; // "ESMD"
     private const int Version = 2;
 
     public static void Write(Stream stream, IReadOnlyCollection<WovenMethod> methods)

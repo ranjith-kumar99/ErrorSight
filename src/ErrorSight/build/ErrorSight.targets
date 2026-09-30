@@ -1,0 +1,47 @@
+<Project>
+  <!--
+    ErrorSight build-time instrumentation.
+
+    After the C# compiler produces obj/<App>.dll, the ErrorSight weaver adds an exception *filter*
+    to your methods. When an exception passes through a method, the filter records the method's
+    parameters, locals and `this` (masked), then lets the exception continue unchanged.
+
+    Opt out per project:        <ErrorSightWeave>false</ErrorSightWeave>
+    Test projects (IsTestProject=true) are not woven unless <ErrorSightWeave>true</ErrorSightWeave> is set.
+    Opt out per method/type:    [ErrorSight.ErrorSightIgnore]
+    Skip tiny methods (IL bytes, default 16, keeps them inlinable): <ErrorSightMinILSize>16</ErrorSightMinILSize>
+  -->
+  <PropertyGroup>
+    <ErrorSightWeave Condition="'$(ErrorSightWeave)' == '' and '$(IsTestProject)' == 'true'">false</ErrorSightWeave>
+    <ErrorSightWeave Condition="'$(ErrorSightWeave)' == ''">true</ErrorSightWeave>
+    <ErrorSightMinILSize Condition="'$(ErrorSightMinILSize)' == ''">16</ErrorSightMinILSize>
+    <ErrorSightWeaverPath Condition="'$(ErrorSightWeaverPath)' == ''">$(MSBuildThisFileDirectory)..\tools\weaver\ErrorSight.Weaver.dll</ErrorSightWeaverPath>
+    <_ErrorSightDotnetHost>$(DOTNET_HOST_PATH)</_ErrorSightDotnetHost>
+    <_ErrorSightDotnetHost Condition="'$(_ErrorSightDotnetHost)' == ''">dotnet</_ErrorSightDotnetHost>
+  </PropertyGroup>
+
+  <Target Name="ErrorSightWeave"
+          AfterTargets="CoreCompile"
+          Condition="'$(ErrorSightWeave)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true'"
+          Inputs="@(IntermediateAssembly)"
+          Outputs="$(IntermediateOutputPath)$(TargetName).errorsight">
+
+    <PropertyGroup>
+      <_ErrorSightReferences>$(IntermediateOutputPath)$(TargetName).errorsight.rsp</_ErrorSightReferences>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(_ErrorSightReferences)"
+                      Lines="@(ReferencePath->'%(FullPath)')"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+
+    <Exec Command="&quot;$(_ErrorSightDotnetHost)&quot; &quot;$(ErrorSightWeaverPath)&quot; --assembly &quot;@(IntermediateAssembly->'%(FullPath)')&quot; --references &quot;$(_ErrorSightReferences)&quot; --min-il-size $(ErrorSightMinILSize)"
+          StandardOutputImportance="low" />
+
+    <Touch Files="$(IntermediateOutputPath)$(TargetName).errorsight" AlwaysCreate="true" />
+
+    <ItemGroup>
+      <FileWrites Include="$(IntermediateOutputPath)$(TargetName).errorsight;$(_ErrorSightReferences)" />
+    </ItemGroup>
+  </Target>
+</Project>

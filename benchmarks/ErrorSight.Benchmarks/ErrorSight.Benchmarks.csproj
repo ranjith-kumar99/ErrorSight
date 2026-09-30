@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Overhead measurements. Run with: dotnet run (Release configuration) on this project. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <TieredPGO>true</TieredPGO>
+    <ErrorSightWeaverPath>$(MSBuildThisFileDirectory)..\..\src\ErrorSight.Weaver\bin\$(Configuration)\net8.0\ErrorSight.Weaver.dll</ErrorSightWeaverPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ErrorSight\ErrorSight.csproj" />
+    <ProjectReference Include="..\..\src\ErrorSight.Weaver\ErrorSight.Weaver.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Import Project="..\..\src\ErrorSight\build\ErrorSight.targets" />
+
+</Project>
