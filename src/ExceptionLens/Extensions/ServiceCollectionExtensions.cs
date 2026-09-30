@@ -2,25 +2,29 @@ using ExceptionLens.Analyzers;
 using ExceptionLens.Core;
 using ExceptionLens.Formatting;
 using ExceptionLens.Integrations.AspNetCore;
-using ExceptionLens.Integrations.Logging;
 using ExceptionLens.Integrations.OpenTelemetry;
 using ExceptionLens.Options;
+using ExceptionLens.Runtime;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Hosting;
 
 namespace ExceptionLens.Extensions;
 
+/// <summary>Registration of ExceptionLens services.</summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers ExceptionLens enrichment, formatters, and all built-in analyzers.
+    /// Enables ExceptionLens. That is the only call your application needs:
+    /// exceptions are detected automatically and the active OpenTelemetry span (<c>Activity</c>) is
+    /// enriched with the root cause — the null expression, masked runtime values and the source location.
     ///
     /// <code>
+    ///   builder.Services.AddOpenTelemetry().WithTracing(...);
     ///   builder.Services.AddExceptionLens();
     ///   // or with options:
-    ///   builder.Services.AddExceptionLens(opt => opt.IncludeDiagnosticsInResponse = true);
+    ///   builder.Services.AddExceptionLens(o => o.Masking.Mode = MaskingMode.All);
     /// </code>
     /// </summary>
     public static IServiceCollection AddExceptionLens(
@@ -30,6 +34,8 @@ public static class ServiceCollectionExtensions
         var options = new ExceptionLensOptions();
         configure?.Invoke(options);
 
+        // Instrumented code runs outside DI; give it the same options.
+        ExceptionLensRuntime.Configure(options);
         services.AddSingleton(options);
 
         // ── Analyzers ─────────────────────────────────────────────────────────
@@ -50,11 +56,9 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IEnumerable<IExceptionAnalyzer>>(),
             sp.GetRequiredService<ExceptionLensOptions>()));
 
-        // ── ASP.NET Core middleware ───────────────────────────────────────────
-        services.AddTransient<ExceptionLensMiddleware>();
-
-        // ── OpenTelemetry processor ──────────────────────────────────────────
-        services.TryAddSingleton<ExceptionLensActivityProcessor>();
+        // ── OpenTelemetry: automatic span enrichment ─────────────────────────
+        services.TryAddSingleton<ExceptionLensTelemetry>();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IHostedService, ExceptionLensHostedService>());
 
         return services;
     }
@@ -77,10 +81,9 @@ public static class ServiceCollectionExtensions
 public static class ApplicationBuilderExtensions
 {
     /// <summary>
-    /// Adds ExceptionLens exception-enrichment middleware to the pipeline.
-    ///
-    /// Place early in the pipeline (before MapControllers / MapEndpoints)
-    /// so it catches all exceptions:
+    /// Optional. Span enrichment is automatic; add this middleware only if you also want ExceptionLens to
+    /// log its text banner for failed requests and/or return a problem-details body
+    /// (<see cref="ExceptionLensOptions.IncludeDiagnosticsInResponse"/>).
     ///
     /// <code>
     ///   app.UseExceptionLens();

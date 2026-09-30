@@ -45,7 +45,7 @@ public sealed class InvalidOperationAnalyzer : IExceptionAnalyzer
         var failingLine = StackTraceParser.ReadFailingLine(exception);
         if (failingLine is not null)
         {
-            diagnostics.FailingExpression = failingLine;
+            diagnostics.FailingExpression ??= failingLine;
             var match = LinqOperationPattern.Match(failingLine);
             if (match.Success)
             {

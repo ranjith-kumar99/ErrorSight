@@ -3,8 +3,9 @@ using ExceptionLens.Core;
 namespace ExceptionLens.Analyzers;
 
 /// <summary>
-/// Enriches NullReferenceException with the failing expression (from source),
-/// call location, and any values the developer attached via Capture().
+/// Explains a NullReferenceException. The null expression itself is resolved automatically from the
+/// build-time instrumentation (see <c>CapturedValuesResolver</c>); this analyzer adds the source line
+/// when available and composes the cause / suggestion.
 /// </summary>
 public sealed class NullReferenceAnalyzer : IExceptionAnalyzer
 {
@@ -12,26 +13,21 @@ public sealed class NullReferenceAnalyzer : IExceptionAnalyzer
 
     public void Enrich(ExceptionDiagnostics diagnostics, Exception exception)
     {
-        // Try to read the failing source line from the PDB
-        var failingLine = StackTraceParser.ReadFailingLine(exception);
-        if (failingLine is not null)
-        {
-            diagnostics.FailingExpression = failingLine;
+        if (diagnostics.FailingExpression is null && diagnostics.SourceFile is not null)
+            diagnostics.FailingExpression = StackTraceParser.ReadFailingLine(exception);
 
-            // Identify the null sub-expression from developer-attached context
-            if (diagnostics.NullExpression is null)
-                diagnostics.NullExpression = TryInferNullExpression(failingLine, diagnostics.Values);
-        }
+        if (diagnostics.NullExpression is null && diagnostics.FailingExpression is not null)
+            diagnostics.NullExpression = TryInferNullExpression(diagnostics.FailingExpression, diagnostics.Values);
 
-        // Pull developer-attached null expression
-        if (exception.Data.Contains(ExceptionDataKeys.NullExpression))
-            diagnostics.NullExpression = exception.Data[ExceptionDataKeys.NullExpression] as string;
-
-        // Compose the "possible cause" narrative
         if (diagnostics.NullExpression is not null)
         {
             diagnostics.PossibleCause = $"{diagnostics.NullExpression} is null.";
             diagnostics.Suggestion = $"Check whether {diagnostics.NullExpression} is initialised before accessing its members.";
+        }
+        else if (diagnostics.NullCandidates is { Length: > 0 } candidates)
+        {
+            diagnostics.PossibleCause = $"One of these is null: {string.Join(", ", candidates)}.";
+            diagnostics.Suggestion = "Use null-conditional operators (?.) or guard clauses to validate the chain.";
         }
         else if (diagnostics.FailingExpression is not null)
         {
@@ -41,12 +37,14 @@ public sealed class NullReferenceAnalyzer : IExceptionAnalyzer
         else
         {
             diagnostics.PossibleCause = "An object reference is null.";
-            diagnostics.Suggestion = "Use exception.Capture(new { variable }) to attach the runtime values.";
+            diagnostics.Suggestion =
+                "The failing method was not instrumented (build-time weaving disabled, [ExceptionLensIgnore], " +
+                "or a framework method), so the null expression could not be determined.";
         }
     }
 
     /// <summary>
-    /// Cross-references source expression with captured values to find the first null member.
+    /// Cross-references a source expression with captured values to find the first null member.
     /// e.g. expression = "customer.Address.City.Name", values has customer.Address = null
     /// → returns "customer.Address"
     /// </summary>
@@ -54,7 +52,6 @@ public sealed class NullReferenceAnalyzer : IExceptionAnalyzer
     {
         if (values.Count == 0) return null;
 
-        // Walk the dot-chain left-to-right and return the first key whose value is null
         var parts = expression.Split('.');
         for (int i = 1; i <= parts.Length; i++)
         {

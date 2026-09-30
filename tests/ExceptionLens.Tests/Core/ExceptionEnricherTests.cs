@@ -1,6 +1,5 @@
 using ExceptionLens.Analyzers;
 using ExceptionLens.Core;
-using ExceptionLens.Extensions;
 using ExceptionLens.Options;
 using FluentAssertions;
 
@@ -146,38 +145,26 @@ public sealed class ExceptionEnricherTests
         result.AdditionalData["innerExceptionCount"].Should().Be(2);
     }
 
-    // ── Capture() extension ───────────────────────────────────────────────────
+    // ── Exception.Data / caching ──────────────────────────────────────────────
 
     [Fact]
-    public void Capture_AttachesValuesToException()
+    public void ExceptionData_SensitiveKeysAreMasked()
     {
-        var customer = new { Id = 1837 };
-        object? address = null;
-        var ex = new NullReferenceException()
-            .Capture(new { customer, customerAddress = address });
+        var ex = new InvalidOperationException("x");
+        ex.Data["password"] = "hunter2";
+        ex.Data["orderId"] = 42;
 
         var result = BuildEnricher().Enrich(ex);
-        result.Values.Should().ContainKey("customer");
-        result.Values.Should().ContainKey("customerAddress");
-        result.Values["customerAddress"].Should().BeNull();
+        result.AdditionalData["password"].Should().Be("***");
+        result.AdditionalData["orderId"].Should().Be(42);
     }
 
     [Fact]
-    public void NullAt_SetsNullExpression()
+    public void Enrich_IsCachedPerException()
     {
-        var ex = new NullReferenceException()
-            .NullAt("customer.Address");
-
-        var result = BuildEnricher().Enrich(ex);
-        result.NullExpression.Should().Be("customer.Address");
-    }
-
-    [Fact]
-    public void WithCorrelationId_SetsId()
-    {
-        var ex = new Exception("x").WithCorrelationId("req-123");
-        var result = BuildEnricher().Enrich(ex);
-        result.CorrelationId.Should().Be("req-123");
+        var enricher = BuildEnricher();
+        var ex = new InvalidOperationException("x");
+        enricher.Enrich(ex).Should().BeSameAs(enricher.Enrich(ex));
     }
 
     // ── Inner exception ───────────────────────────────────────────────────────

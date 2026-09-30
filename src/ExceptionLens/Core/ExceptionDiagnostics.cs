@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
+using ExceptionLens.Runtime;
 
 namespace ExceptionLens.Core;
 
@@ -12,7 +14,7 @@ public sealed class ExceptionDiagnostics
     // ── Identity ────────────────────────────────────────────────────────────
     public string ExceptionType { get; init; } = string.Empty;
     public string FullTypeName { get; init; } = string.Empty;
-    public string Message { get; init; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
     public string? CorrelationId { get; set; }
 
@@ -25,8 +27,14 @@ public sealed class ExceptionDiagnostics
     public string? AssemblyName { get; set; }
 
     // ── Failing expression ───────────────────────────────────────────────────
-    /// <summary>Sub-expression that evaluated to null (NullReferenceException).</summary>
+    /// <summary>Sub-expression that evaluated to null (NullReferenceException), e.g. <c>order.Customer.Address</c>.</summary>
     public string? NullExpression { get; set; }
+    /// <summary>
+    /// When the null expression could not be pinned down, the expressions on the failing line that
+    /// could have been null.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? NullCandidates { get; set; }
     /// <summary>Full source expression on the faulting line.</summary>
     public string? FailingExpression { get; set; }
     public string[]? SourceContext { get; set; }
@@ -48,10 +56,14 @@ public sealed class ExceptionDiagnostics
 
     // ── Captured runtime values ──────────────────────────────────────────────
     /// <summary>
-    /// Variable/expression → value pairs captured at the throw site.
-    /// Populated automatically where possible; add more via exception.Capture(new { x, y }).
+    /// Variable/expression → value pairs at the throw site, captured automatically by the build-time
+    /// instrumentation (already masked). Captured values are <see cref="ValueDisplay"/> text; null means
+    /// the value was null.
     /// </summary>
     public Dictionary<string, object?> Values { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Values captured in each instrumented frame, innermost (throw site) first.</summary>
+    public List<FrameDiagnostics> Frames { get; } = new();
 
     // ── Call chain ───────────────────────────────────────────────────────────
     public List<CallFrame> CallChain { get; } = new();
@@ -66,6 +78,46 @@ public sealed class ExceptionDiagnostics
     // ── Inner exception ──────────────────────────────────────────────────────
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExceptionDiagnostics? InnerException { get; set; }
+}
+
+/// <summary>Values captured in one instrumented stack frame.</summary>
+public sealed class FrameDiagnostics
+{
+    /// <summary>Source-level method name, e.g. <c>OrderService.ProcessOrder</c>.</summary>
+    public string Method { get; init; } = string.Empty;
+    public string? SourceFile { get; init; }
+    public int? Line { get; init; }
+    [JsonIgnore]
+    public int? ILOffset { get; init; }
+    /// <summary>Parameters, locals and <c>this</c> in scope at the failure point.</summary>
+    public IReadOnlyList<CapturedValue> Values { get; init; } = Array.Empty<CapturedValue>();
+}
+
+/// <summary>
+/// Pre-formatted display text for a captured value (e.g. <c>"Jane"</c>, <c>Customer { Id = 1837 }</c>, <c>***</c>).
+/// Serialises to JSON as a plain string.
+/// </summary>
+[JsonConverter(typeof(ValueDisplayJsonConverter))]
+public sealed class ValueDisplay
+{
+    public ValueDisplay(string text) => Text = text;
+
+    public string Text { get; }
+
+    public override string ToString() => Text;
+
+    public override bool Equals(object? obj) => obj is ValueDisplay other && other.Text == Text;
+
+    public override int GetHashCode() => Text.GetHashCode(StringComparison.Ordinal);
+}
+
+internal sealed class ValueDisplayJsonConverter : JsonConverter<ValueDisplay>
+{
+    public override ValueDisplay? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.GetString() is { } text ? new ValueDisplay(text) : null;
+
+    public override void Write(Utf8JsonWriter writer, ValueDisplay value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value.Text);
 }
 
 /// <summary>A single frame in the reconstructed call chain.</summary>
