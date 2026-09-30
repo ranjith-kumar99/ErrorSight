@@ -14,28 +14,39 @@ internal static class StackTraceParser
         @"at (?<full>.+\))",
         RegexOptions.Compiled | RegexOptions.ExplicitCapture);
 
-    public static List<CallFrame> ParseCallChain(Exception exception)
+    private static readonly Assembly Self = typeof(StackTraceParser).Assembly;
+
+    /// <summary>Frames that belong to ExceptionLens itself are never reported.</summary>
+    private static bool IsOwnFrame(MethodBase? method) => method?.DeclaringType?.Assembly == Self;
+
+    /// <summary>Stack frames of <paramref name="exception"/>; file info requires PDB lookups, so ask only when needed.</summary>
+    public static StackFrame[] GetFrames(Exception exception, bool needFileInfo)
+    {
+        try { return new StackTrace(exception, needFileInfo).GetFrames(); }
+        catch { return Array.Empty<StackFrame>(); }
+    }
+
+    public static List<CallFrame> ParseCallChain(Exception exception, bool includeFileInfo = true) =>
+        ParseCallChain(exception, GetFrames(exception, includeFileInfo), includeFileInfo);
+
+    public static List<CallFrame> ParseCallChain(Exception exception, StackFrame[] stackFrames, bool includeFileInfo)
     {
         var frames = new List<CallFrame>();
 
         try
         {
-            var st = new StackTrace(exception, fNeedFileInfo: true);
-            foreach (var frame in st.GetFrames())
+            foreach (var frame in stackFrames)
             {
                 var method = frame.GetMethod();
                 if (method is null) continue;
 
-                // Skip ExceptionLens internal frames
-                var declaringType = method.DeclaringType;
-                if (declaringType is not null &&
-                    declaringType.Namespace?.StartsWith("ExceptionLens", StringComparison.Ordinal) == true)
-                    continue;
+                if (IsOwnFrame(method)) continue;
 
+                var declaringType = UserType(method.DeclaringType);
                 var typeName = declaringType?.FullName ?? "<unknown>";
                 var methodName = BuildMethodSignature(method);
-                var file = frame.GetFileName();
-                var line = frame.GetFileLineNumber();
+                var file = includeFileInfo ? frame.GetFileName() : null;
+                var line = includeFileInfo ? frame.GetFileLineNumber() : 0;
 
                 frames.Add(new CallFrame
                 {
@@ -55,36 +66,50 @@ internal static class StackTraceParser
         return frames;
     }
 
-    public static (string? file, int? line, string? method, string? typeName) GetThrowSite(Exception exception)
+    /// <summary>
+    /// The first frame with source information (your code), falling back to the very first frame
+    /// (e.g. a framework method that threw on your behalf).
+    /// </summary>
+    public static (string? file, int? line, string? method, string? typeName) GetThrowSite(Exception exception) =>
+        GetThrowSite(GetFrames(exception, needFileInfo: true));
+
+    public static (string? file, int? line, string? method, string? typeName) GetThrowSite(StackFrame[] frames)
     {
         try
         {
-            var st = new StackTrace(exception, fNeedFileInfo: true);
-            foreach (var frame in st.GetFrames())
+            (string?, int?, string?, string?)? fallback = null;
+            foreach (var frame in frames)
             {
                 var method = frame.GetMethod();
-                if (method is null) continue;
-
-                var declaringType = method.DeclaringType;
-                if (declaringType?.Namespace?.StartsWith("ExceptionLens", StringComparison.Ordinal) == true)
-                    continue;
+                if (method is null || IsOwnFrame(method)) continue;
 
                 var file = frame.GetFileName();
                 var line = frame.GetFileLineNumber();
-                var methodName = BuildMethodSignature(method);
-                var typeName = declaringType?.Name ?? "<unknown>";
-
-                return (
+                var site = (
                     file is not null ? Path.GetFileName(file) : null,
-                    line > 0 ? line : null,
-                    methodName,
-                    typeName
-                );
+                    line > 0 ? line : (int?)null,
+                    BuildMethodSignature(method),
+                    UserTypeName(method.DeclaringType));
+
+                if (file is not null) return site;
+                fallback ??= site;
             }
+
+            if (fallback is { } f) return f;
         }
         catch { /* ignore */ }
 
         return (null, null, null, null);
+    }
+
+    /// <summary><c>OrderService</c> for both <c>OrderService</c> and its async state machine <c>&lt;GetAsync&gt;d__3</c>.</summary>
+    private static string UserTypeName(Type? type) => UserType(type)?.Name ?? "<unknown>";
+
+    private static Type? UserType(Type? type)
+    {
+        while (type is not null && type.Name.StartsWith('<') && type.DeclaringType is not null)
+            type = type.DeclaringType;
+        return type;
     }
 
     public static string[]? ReadSourceContext(Exception exception, int contextLines = 2)
@@ -94,9 +119,7 @@ internal static class StackTraceParser
             var st = new StackTrace(exception, fNeedFileInfo: true);
             foreach (var frame in st.GetFrames())
             {
-                var method = frame.GetMethod();
-                if (method?.DeclaringType?.Namespace?.StartsWith("ExceptionLens", StringComparison.Ordinal) == true)
-                    continue;
+                if (IsOwnFrame(frame.GetMethod())) continue;
 
                 var file = frame.GetFileName();
                 var line = frame.GetFileLineNumber();
@@ -120,9 +143,7 @@ internal static class StackTraceParser
             var st = new StackTrace(exception, fNeedFileInfo: true);
             foreach (var frame in st.GetFrames())
             {
-                var method = frame.GetMethod();
-                if (method?.DeclaringType?.Namespace?.StartsWith("ExceptionLens", StringComparison.Ordinal) == true)
-                    continue;
+                if (IsOwnFrame(frame.GetMethod())) continue;
 
                 var file = frame.GetFileName();
                 var line = frame.GetFileLineNumber();
@@ -177,6 +198,11 @@ internal static class StackTraceParser
 
     private static string BuildMethodSignature(MethodBase method)
     {
+        // async/iterator state machine: <GetCityAsync>d__3.MoveNext() → GetCityAsync
+        var owner = method.DeclaringType?.Name;
+        if (method.Name == "MoveNext" && owner is not null && owner.StartsWith('<') && owner.IndexOf(">d__", StringComparison.Ordinal) > 0)
+            return owner[1..owner.IndexOf('>')];
+
         var parameters = method.GetParameters();
         if (parameters.Length == 0) return method.Name;
         var paramStr = string.Join(", ", parameters.Select(p => $"{SimplifyTypeName(p.ParameterType.Name)} {p.Name}"));

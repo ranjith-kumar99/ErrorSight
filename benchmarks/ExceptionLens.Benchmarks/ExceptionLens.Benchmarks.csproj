@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Overhead measurements. Run with: dotnet run (Release configuration) on this project. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <TieredPGO>true</TieredPGO>
+    <ExceptionLensWeaverPath>$(MSBuildThisFileDirectory)..\..\src\ExceptionLens.Weaver\bin\$(Configuration)\net8.0\ExceptionLens.Weaver.dll</ExceptionLensWeaverPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ExceptionLens\ExceptionLens.csproj" />
+    <ProjectReference Include="..\..\src\ExceptionLens.Weaver\ExceptionLens.Weaver.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <Import Project="..\..\src\ExceptionLens\build\ExceptionLens.targets" />
+
+</Project>

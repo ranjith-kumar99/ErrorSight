@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace ExceptionLens.Tests.Integration;
 
+[Collection(ExceptionLens.Tests.Weaving.RuntimeCollection.Name)]
 public sealed class ServiceCollectionTests
 {
     [Fact]
@@ -60,10 +61,32 @@ public sealed class ServiceCollectionTests
     }
 
     [Fact]
-    public void AddExceptionLens_RegistersActivityProcessor()
+    public void AddExceptionLens_RegistersTelemetryAndHostedService()
     {
         var sp = BuildSp();
-        sp.GetRequiredService<ExceptionLensActivityProcessor>().Should().NotBeNull();
+        sp.GetRequiredService<ExceptionLensTelemetry>().Should().NotBeNull();
+        sp.GetServices<Microsoft.Extensions.Hosting.IHostedService>().Should().ContainSingle();
+    }
+
+    [Fact]
+    public void AddExceptionLens_ConfiguresRuntimeCaptureOptions()
+    {
+        var services = new ServiceCollection();
+        services.AddExceptionLens(opt => opt.Masking.Mode = ExceptionLens.Masking.MaskingMode.All);
+        var sp = services.BuildServiceProvider();
+
+        ExceptionLens.Runtime.ExceptionLensRuntime.Options.Should().BeSameAs(sp.GetRequiredService<ExceptionLensOptions>());
+        ExceptionLens.Runtime.ExceptionLensRuntime.Configure(new ExceptionLensOptions());
+    }
+
+    [Fact]
+    public void AddExceptionLens_PassesDependencyInjectionValidation()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddExceptionLens();
+        var build = () => services.BuildServiceProvider(new ServiceProviderOptions { ValidateOnBuild = true, ValidateScopes = true });
+        build.Should().NotThrow();
     }
 
     [Fact]

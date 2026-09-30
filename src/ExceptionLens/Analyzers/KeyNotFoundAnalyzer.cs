@@ -27,8 +27,8 @@ public sealed class KeyNotFoundAnalyzer : IExceptionAnalyzer
         var failingLine = StackTraceParser.ReadFailingLine(exception);
         if (failingLine is not null)
         {
-            diagnostics.FailingExpression = failingLine;
-            diagnostics.CollectionName = ExtractCollectionName(failingLine);
+            diagnostics.FailingExpression ??= failingLine;
+            diagnostics.CollectionName ??= ExtractCollectionName(failingLine);
         }
 
         var keyDisplay = diagnostics.MissingKey is not null ? $"'{diagnostics.MissingKey}'" : "the requested key";

@@ -23,26 +23,18 @@ public sealed class IndexOutOfRangeAnalyzer : IExceptionAnalyzer
             diagnostics.ParameterName = aoore.ParamName;
             if (aoore.ActualValue is int idx)
             {
-                diagnostics.RequestedIndex = idx;
+                diagnostics.RequestedIndex ??= idx;
                 diagnostics.Values["requestedIndex"] = idx;
             }
         }
 
-        // Read source line for collection name and index expression
+        // Collection name, index and length come from the captured values when the method was
+        // instrumented; the source line is a fallback for the collection name.
         var failingLine = StackTraceParser.ReadFailingLine(exception);
         if (failingLine is not null)
         {
-            diagnostics.FailingExpression = failingLine;
-            diagnostics.CollectionName = ExtractCollectionName(failingLine);
-        }
-
-        // Pull developer-attached length
-        if (exception.Data.Contains("CollectionLength") &&
-            exception.Data["CollectionLength"] is int len)
-        {
-            diagnostics.CollectionLength = len;
-            diagnostics.ValidIndexRange = $"0–{len - 1}";
-            diagnostics.Values["collectionLength"] = len;
+            diagnostics.FailingExpression ??= failingLine;
+            diagnostics.CollectionName ??= ExtractCollectionName(failingLine);
         }
 
         if (diagnostics.CollectionLength.HasValue)

@@ -1,0 +1,47 @@
+<Project>
+  <!--
+    ExceptionLens build-time instrumentation.
+
+    After the C# compiler produces obj/<App>.dll, the ExceptionLens weaver adds an exception *filter*
+    to your methods. When an exception passes through a method, the filter records the method's
+    parameters, locals and `this` (masked), then lets the exception continue unchanged.
+
+    Opt out per project:        <ExceptionLensWeave>false</ExceptionLensWeave>
+    Test projects (IsTestProject=true) are not woven unless <ExceptionLensWeave>true</ExceptionLensWeave> is set.
+    Opt out per method/type:    [ExceptionLens.ExceptionLensIgnore]
+    Skip tiny methods (IL bytes, default 16, keeps them inlinable): <ExceptionLensMinILSize>16</ExceptionLensMinILSize>
+  -->
+  <PropertyGroup>
+    <ExceptionLensWeave Condition="'$(ExceptionLensWeave)' == '' and '$(IsTestProject)' == 'true'">false</ExceptionLensWeave>
+    <ExceptionLensWeave Condition="'$(ExceptionLensWeave)' == ''">true</ExceptionLensWeave>
+    <ExceptionLensMinILSize Condition="'$(ExceptionLensMinILSize)' == ''">16</ExceptionLensMinILSize>
+    <ExceptionLensWeaverPath Condition="'$(ExceptionLensWeaverPath)' == ''">$(MSBuildThisFileDirectory)..\tools\weaver\ExceptionLens.Weaver.dll</ExceptionLensWeaverPath>
+    <_ExceptionLensDotnetHost>$(DOTNET_HOST_PATH)</_ExceptionLensDotnetHost>
+    <_ExceptionLensDotnetHost Condition="'$(_ExceptionLensDotnetHost)' == ''">dotnet</_ExceptionLensDotnetHost>
+  </PropertyGroup>
+
+  <Target Name="ExceptionLensWeave"
+          AfterTargets="CoreCompile"
+          Condition="'$(ExceptionLensWeave)' == 'true' and '$(DesignTimeBuild)' != 'true' and '$(BuildingForLiveUnitTesting)' != 'true'"
+          Inputs="@(IntermediateAssembly)"
+          Outputs="$(IntermediateOutputPath)$(TargetName).exceptionlens">
+
+    <PropertyGroup>
+      <_ExceptionLensReferences>$(IntermediateOutputPath)$(TargetName).exceptionlens.rsp</_ExceptionLensReferences>
+    </PropertyGroup>
+
+    <WriteLinesToFile File="$(_ExceptionLensReferences)"
+                      Lines="@(ReferencePath->'%(FullPath)')"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+
+    <Exec Command="&quot;$(_ExceptionLensDotnetHost)&quot; &quot;$(ExceptionLensWeaverPath)&quot; --assembly &quot;@(IntermediateAssembly->'%(FullPath)')&quot; --references &quot;$(_ExceptionLensReferences)&quot; --min-il-size $(ExceptionLensMinILSize)"
+          StandardOutputImportance="low" />
+
+    <Touch Files="$(IntermediateOutputPath)$(TargetName).exceptionlens" AlwaysCreate="true" />
+
+    <ItemGroup>
+      <FileWrites Include="$(IntermediateOutputPath)$(TargetName).exceptionlens;$(_ExceptionLensReferences)" />
+    </ItemGroup>
+  </Target>
+</Project>

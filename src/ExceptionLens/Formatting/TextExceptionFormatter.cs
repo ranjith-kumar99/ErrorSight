@@ -39,6 +39,14 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
             sb.AppendLine();
         }
 
+        if (d.NullCandidates is { Length: > 0 } candidates)
+        {
+            sb.AppendLine("❓ POSSIBLY NULL (one of):");
+            foreach (var candidate in candidates)
+                sb.AppendLine(Indent + candidate);
+            sb.AppendLine();
+        }
+
         // ── Failing expression / source line ─────────────────────────────
         if (d.FailingExpression is not null)
         {
@@ -130,6 +138,22 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
             {
                 var valStr = FormatValue(val);
                 sb.AppendLine(Indent + key.PadRight(maxKeyLen) + "  =  " + valStr);
+            }
+            sb.AppendLine();
+        }
+
+        // ── Values in calling frames ──────────────────────────────────────
+        var callers = d.Frames.Skip(1).Where(f => f.Values.Count > 0).Take(3).ToList();
+        if (callers.Count > 0)
+        {
+            sb.AppendLine("Caller values:");
+            foreach (var frame in callers)
+            {
+                sb.AppendLine(Indent + frame.Method + (frame.Line is { } line ? $" (line {line})" : string.Empty));
+                var values = frame.Values.Take(6).ToList();
+                var width = values.Max(v => v.Name.Length);
+                foreach (var value in values)
+                    sb.AppendLine(Indent + Indent + value.Name.PadRight(width) + "  =  " + value.Value);
             }
             sb.AppendLine();
         }
