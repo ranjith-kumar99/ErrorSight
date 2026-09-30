@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>ErrorSight</RootNamespace>
+    <AssemblyName>ErrorSight</AssemblyName>
+
+    <!-- NuGet metadata -->
+    <PackageId>ErrorSight</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>ErrorSight Contributors</Authors>
+    <Description>Root-cause diagnostics for .NET exceptions, delivered through OpenTelemetry: which expression was null, the runtime values at the throw site (masked), and the source location — with zero code changes.</Description>
+    <PackageTags>exceptions;diagnostics;opentelemetry;tracing;nullreferenceexception;debugging;aspnetcore</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="8.0.0" />
+    <!-- 9.x adds ActivityListener.ExceptionRecorder / Activity.AddException (same version OpenTelemetry 1.10+ uses) -->
+    <PackageReference Include="System.Diagnostics.DiagnosticSource" Version="9.0.0" />
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+
+  <!-- ASP.NET Core is optional — reference it when available -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Shared\*.cs" Link="Shared\%(Filename)%(Extension)" />
+    <InternalsVisibleTo Include="ErrorSight.Tests" />
+  </ItemGroup>
+
+  <!-- The weaver ships inside this package (tools/weaver) and runs after CoreCompile in consuming projects. -->
+  <ItemGroup>
+    <ProjectReference Include="..\ErrorSight.Weaver\ErrorSight.Weaver.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="build\ErrorSight.targets" Pack="true" PackagePath="build\;buildTransitive\" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <Target Name="_ErrorSightPackWeaver" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <_ErrorSightWeaverFiles Include="$(MSBuildThisFileDirectory)..\ErrorSight.Weaver\bin\$(Configuration)\net8.0\*.dll;
+                                          $(MSBuildThisFileDirectory)..\ErrorSight.Weaver\bin\$(Configuration)\net8.0\*.json" />
+      <None Include="@(_ErrorSightWeaverFiles)" Pack="true" PackagePath="tools/weaver/%(Filename)%(Extension)" />
+    </ItemGroup>
+    <Error Condition="'@(_ErrorSightWeaverFiles)' == ''" Text="ErrorSight.Weaver output not found; build the solution before packing." />
+  </Target>
+
+</Project>
