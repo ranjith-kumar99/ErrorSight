@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using ErrorSight.Core;
+using ErrorSight.Options;
 
 namespace ErrorSight.Analyzers;
 
@@ -15,28 +16,25 @@ public sealed class KeyNotFoundAnalyzer : IExceptionAnalyzer
 
     public void Enrich(ExceptionDiagnostics diagnostics, Exception exception)
     {
+        // The key is application data: only reported when values are captured.
         var match = KeyPattern.Match(exception.Message);
-        if (match.Success)
-        {
-            var key = match.Groups["key"].Value.Trim();
-            diagnostics.MissingKey = key;
-            diagnostics.Values["missingKey"] = key;
-        }
+        if (match.Success && diagnostics.DataCapture == DataCapture.Values)
+            diagnostics.MissingKey = match.Groups["key"].Value.Trim();
 
         // Try to get the dictionary/collection name from the source line
-        var failingLine = StackTraceParser.ReadFailingLine(exception);
+        var failingLine = diagnostics.FailingSourceLine;
         if (failingLine is not null)
         {
             diagnostics.FailingExpression ??= failingLine;
             diagnostics.CollectionName ??= ExtractCollectionName(failingLine);
         }
 
-        var keyDisplay = diagnostics.MissingKey is not null ? $"'{diagnostics.MissingKey}'" : "the requested key";
+        var keyDisplay = diagnostics.MissingKey is not null ? $"'{diagnostics.MissingKey}'" : "The requested key";
         var collDisplay = diagnostics.CollectionName ?? "the dictionary";
 
         diagnostics.PossibleCause = $"{keyDisplay} does not exist in {collDisplay}.";
         diagnostics.Suggestion =
-            $"Check whether {keyDisplay} was inserted before access, or use TryGetValue() / GetValueOrDefault().";
+            $"Check whether {(diagnostics.MissingKey is not null ? keyDisplay : "the key")} was inserted before access, or use TryGetValue() / GetValueOrDefault().";
     }
 
     private static string? ExtractCollectionName(string line)

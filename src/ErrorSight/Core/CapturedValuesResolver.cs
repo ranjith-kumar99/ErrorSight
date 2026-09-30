@@ -7,8 +7,12 @@ using ErrorSight.Runtime.Metadata;
 namespace ErrorSight.Core;
 
 /// <summary>
-/// Turns the frames captured by the build-time instrumentation into diagnostics: throw-site values,
-/// per-frame values, and — for NullReferenceException — the exact expression that was null.
+/// Turns the frames captured by the build-time instrumentation into diagnostics: for NullReferenceException the
+/// exact expression that was null and where it came from, the collection behind index and key errors, and, only
+/// at the levels that allow it, metadata and values.
+///
+/// Expressions are always evaluated against everything that was captured (at <see cref="DataCapture.None"/> that is
+/// only structure: types and null-ness); what is reported never exceeds the configured level.
 /// </summary>
 internal static class CapturedValuesResolver
 {
@@ -36,7 +40,7 @@ internal static class CapturedValuesResolver
                 SourceFile = file is null ? null : Path.GetFileName(file),
                 Line = line > 0 ? line : null,
                 ILOffset = ilOffset,
-                Values = frame.ValuesAt(ilOffset),
+                Values = frame.ValuesAt(ilOffset).Select(v => v.ViewAt(options.DataCapture)).ToList(),
             });
         }
 
@@ -45,12 +49,8 @@ internal static class CapturedValuesResolver
         var throwSite = d.Frames[0];
         var throwFrame = located[0].Frame;
         var throwLine = stack.Length > 0 && located[0].Index >= 0 ? stack[located[0].Index].GetFileLineNumber() : 0;
-
-        foreach (var value in throwSite.Values)
-        {
-            if (d.Values.Count >= MaxFlattenedValues) break;
-            d.Values[value.Name] = Display(value);
-        }
+        var roots = throwFrame.ValuesAt(throwSite.ILOffset);
+        var level = options.DataCapture;
 
         var candidates = AccessesAt(throwFrame.Metadata, throwSite.ILOffset, throwLine);
 
@@ -59,23 +59,60 @@ internal static class CapturedValuesResolver
             // Only when the NRE was raised in instrumented code itself (top of the stack); otherwise the
             // null dereference happened inside a callee we have no map for.
             case "System.NullReferenceException" when located[0].Index == 0:
-                if (ResolveNull(d, throwFrame.Metadata, throwSite.Values, candidates) is { } access && options.CaptureSourceLocation)
-                    CorrectLine(d, throwFrame.Metadata, access);
+                if (ResolveNull(d, throwFrame.Metadata, roots, candidates, level) is { } access)
+                {
+                    ResolveOrigin(d, throwFrame.Metadata, access, options.CaptureSourceLocation);
+                    if (options.CaptureSourceLocation) CorrectLine(d, throwFrame.Metadata, access);
+                }
                 break;
             case "System.IndexOutOfRangeException":
             case "System.ArgumentOutOfRangeException":
-                ResolveIndex(d, throwSite.Values, candidates);
+                ResolveIndex(d, roots, candidates, level);
                 break;
             case "System.Collections.Generic.KeyNotFoundException":
-                d.CollectionName ??= candidates.FirstOrDefault(a => a.Kind == AccessKind.Element)?.Receiver;
+                if (candidates.FirstOrDefault(a => a.Kind == AccessKind.Element) is { } lookup)
+                {
+                    d.CollectionName ??= lookup.Receiver;
+                    DescribeCollection(d, roots, lookup.Receiver, level);
+                    AddValue(d, roots, lookup.Receiver, level);
+                    if (lookup.Index is { } key) AddValue(d, roots, key, level);
+                }
                 break;
         }
+
+        // Nothing specific to show: the throw site's variables (values only).
+        if (level == DataCapture.Values && d.Values.Count == 0)
+        {
+            foreach (var value in throwSite.Values.Take(MaxFlattenedValues))
+                d.Values[value.Name] = Display(value);
+        }
     }
+
+    /// <summary>Adds the value of <paramref name="expression"/> to <see cref="ExceptionDiagnostics.Values"/> (values level only).</summary>
+    private static void AddValue(ExceptionDiagnostics d, IReadOnlyList<CapturedValue> roots, string expression, DataCapture level, bool isNull = false)
+    {
+        if (level != DataCapture.Values || d.Values.ContainsKey(expression) || IsLiteral(expression)) return;
+        if (Evaluate(roots, expression) is { } value) d.Values[expression] = Display(value);
+        else if (isNull) d.Values[expression] = null; // the exception proves it was null
+    }
+
+    /// <summary>Collection type and count (metadata and values levels).</summary>
+    private static void DescribeCollection(ExceptionDiagnostics d, IReadOnlyList<CapturedValue> roots, string expression, DataCapture level)
+    {
+        if (level == DataCapture.None) return;
+        var collection = Evaluate(roots, expression) ?? Evaluate(roots, StripCountPreservingCall(expression));
+        if (collection is null) return;
+        d.CollectionType ??= Evaluate(roots, expression)?.Type;
+        d.CollectionLength ??= collection.Count;
+    }
+
+    private static bool IsLiteral(string expression) =>
+        expression.Length > 0 && (char.IsDigit(expression[0]) || expression[0] is '"' or '-');
 
     // ── NullReferenceException ───────────────────────────────────────────────
 
     /// <summary>Sets NullExpression (or NullCandidates) and returns the access that faulted, when known.</summary>
-    private static WovenAccess? ResolveNull(ExceptionDiagnostics d, WovenMethod method, IReadOnlyList<CapturedValue> roots, List<WovenAccess> candidates)
+    private static WovenAccess? ResolveNull(ExceptionDiagnostics d, WovenMethod method, IReadOnlyList<CapturedValue> roots, List<WovenAccess> candidates, DataCapture level)
     {
         if (candidates.Count == 0) return null;
 
@@ -103,7 +140,12 @@ internal static class CapturedValuesResolver
         if (nullExpression is not null)
         {
             d.NullExpression = nullExpression;
-            AddPathValues(d, roots, nullExpression);
+            if (level != DataCapture.None) d.NullType = Evaluate(roots, nullExpression)?.Type;
+
+            // order, order.Customer, order.Customer.Address: only the chain that failed, not whole objects.
+            var segments = SplitPath(nullExpression);
+            for (var i = 1; i <= segments.Count; i++)
+                AddValue(d, roots, string.Join('.', segments.Take(i)), level, isNull: i == segments.Count);
         }
 
         // The longest chain through the null value within the failing statement,
@@ -134,6 +176,40 @@ internal static class CapturedValuesResolver
     }
 
     /// <summary>
+    /// When the null expression starts at a local variable, the last assignment to it before the failing access
+    /// says where the null came from: <c>address = customer.Address</c> on line 128.
+    /// </summary>
+    private static void ResolveOrigin(ExceptionDiagnostics d, WovenMethod method, WovenAccess culprit, bool withLine)
+    {
+        var variable = SplitPath(d.NullExpression!)[0];
+        WovenAssignment? origin = null;
+        foreach (var assignment in method.Assignments)
+        {
+            if (assignment.Variable != variable || assignment.Offset > culprit.Offset) continue;
+            if (origin is null || assignment.Offset > origin.Offset) origin = assignment;
+        }
+        if (origin is null) return;
+
+        d.NullOrigin = new NullOrigin
+        {
+            Variable = variable,
+            Expression = origin.Value,
+            Line = withLine ? LineAt(method, origin.Offset) : null,
+        };
+    }
+
+    private static int? LineAt(WovenMethod method, int offset)
+    {
+        int? line = null;
+        foreach (var point in method.SequencePoints)
+        {
+            if (point.Offset > offset) break;
+            if (point.Line >= 0) line = point.Line;
+        }
+        return line;
+    }
+
+    /// <summary>
     /// Optimized code can report the line of an earlier statement; the faulting access tells the real one.
     /// </summary>
     private static void CorrectLine(ExceptionDiagnostics d, WovenMethod method, WovenAccess access)
@@ -159,43 +235,39 @@ internal static class CapturedValuesResolver
         };
     }
 
-    /// <summary>Adds <c>order.Customer</c> and <c>order.Customer.Address</c> for <c>order.Customer.Address</c>.</summary>
-    private static void AddPathValues(ExceptionDiagnostics d, IReadOnlyList<CapturedValue> roots, string path)
-    {
-        var segments = SplitPath(path);
-        for (var i = 2; i <= segments.Count; i++)
-        {
-            var prefix = string.Join('.', segments.Take(i));
-            if (d.Values.ContainsKey(prefix)) continue;
-            if (Evaluate(roots, prefix) is { } value) d.Values[prefix] = Display(value);
-            else if (i == segments.Count) d.Values[prefix] = null; // the null expression itself
-        }
-    }
-
     // ── Index / key errors ───────────────────────────────────────────────────
 
-    private static void ResolveIndex(ExceptionDiagnostics d, IReadOnlyList<CapturedValue> roots, List<WovenAccess> candidates)
+    private static void ResolveIndex(ExceptionDiagnostics d, IReadOnlyList<CapturedValue> roots, List<WovenAccess> candidates, DataCapture level)
     {
         var elementAccesses = candidates.Where(a => a.Kind == AccessKind.Element).ToList();
+        WovenAccess? culprit = null;
+        int? index = null;
+
+        // With values, the access whose index is outside its collection is the one that failed.
         foreach (var access in elementAccesses)
         {
             var collection = Evaluate(roots, access.Receiver) ?? Evaluate(roots, StripCountPreservingCall(access.Receiver));
-            var index = ResolveInt(roots, access.Index);
-            if (collection?.Count is not { } count || index is not { } i) continue;
-            if (i >= 0 && i < count) continue;
-
-            d.CollectionName = access.Receiver;
-            d.RequestedIndex = i;
-            d.CollectionLength = count;
-            d.ValidIndexRange = count == 0 ? "(empty)" : $"0–{count - 1}";
-            return;
+            var i = ResolveInt(roots, access.Index);
+            if (collection?.Count is not { } count || i is not { } requested) continue;
+            if (requested >= 0 && requested < count) continue;
+            culprit = access;
+            index = requested;
+            break;
         }
 
-        if (elementAccesses.Count == 1)
+        if (culprit is null && elementAccesses.Count == 1)
         {
-            d.CollectionName ??= elementAccesses[0].Receiver;
-            d.RequestedIndex ??= ResolveInt(roots, elementAccesses[0].Index);
+            culprit = elementAccesses[0];
+            index = ResolveInt(roots, culprit.Index);
         }
+        if (culprit is null) return;
+
+        d.CollectionName = culprit.Receiver;
+        DescribeCollection(d, roots, culprit.Receiver, level);
+        if (d.CollectionLength is { } length) d.ValidIndexRange = length == 0 ? "(empty)" : $"0–{length - 1}";
+        if (level == DataCapture.Values) d.RequestedIndex = index;
+        AddValue(d, roots, culprit.Receiver, level);
+        if (culprit.Index is { } indexExpression) AddValue(d, roots, indexExpression, level);
     }
 
     /// <summary><c>order.Lines.ToArray(…)</c> has as many elements as <c>order.Lines</c>.</summary>
@@ -296,7 +368,7 @@ internal static class CapturedValuesResolver
             else
             {
                 if (current is null || current.IsNull) return null;
-                current = current.Member(name);
+                current = current.Child(name);
             }
             if (current is null) return null;
 
@@ -316,7 +388,7 @@ internal static class CapturedValuesResolver
 
                 var key = ResolveKey(roots, rawKey);
                 if (key is null) return null;
-                current = current.Member($"[{key}]");
+                current = current.Child($"[{key}]");
                 if (current is null) return null;
                 bracket = segment.IndexOf('[', close);
             }
@@ -327,7 +399,7 @@ internal static class CapturedValuesResolver
 
     private static CapturedValue? EvaluateAnyElement(IReadOnlyList<CapturedValue> roots, CapturedValue collection, string rest)
     {
-        if (collection.Members is not { Count: > 0 } elements) return null;
+        if (collection.Children is not { Count: > 0 } elements) return null;
 
         CapturedValue? firstKnown = null;
         foreach (var element in elements)
@@ -338,7 +410,7 @@ internal static class CapturedValuesResolver
         }
 
         // Every captured element was fine: only conclusive if all elements were captured.
-        return collection.Count is { } count && count == elements.Count ? firstKnown : null;
+        return collection.Complete ? firstKnown : null;
     }
 
     private static string? ResolveKey(IReadOnlyList<CapturedValue> roots, string expression)
@@ -346,7 +418,7 @@ internal static class CapturedValuesResolver
         if (expression.Length == 0 || expression == "?") return null;
         if (char.IsDigit(expression[0]) || expression[0] == '"' || expression[0] == '-') return expression;
         var value = Evaluate(roots, expression);
-        return value is { IsNull: false, IsMasked: false, Members: null } ? value.Value : null;
+        return value is { IsNull: false, IsMasked: false, Children: null, Value: { } text } ? text : null;
     }
 
     /// <summary>Splits on top-level dots: <c>a.b[x.y].c(…)</c> → a, b[x.y], c(…).</summary>
@@ -384,5 +456,5 @@ internal static class CapturedValuesResolver
         return -1;
     }
 
-    internal static object? Display(CapturedValue value) => value.IsNull ? null : new ValueDisplay(value.Value);
+    internal static object? Display(CapturedValue value) => value.IsNull ? null : new ValueDisplay(value.Display);
 }

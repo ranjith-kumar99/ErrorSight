@@ -1,4 +1,5 @@
 using ErrorSight.Core;
+using ErrorSight.Options;
 
 namespace ErrorSight.Analyzers;
 
@@ -19,7 +20,8 @@ public sealed class AggregateExceptionAnalyzer : IExceptionAnalyzer
             var first = flattened.InnerExceptions[0];
             diagnostics.PossibleCause =
                 $"The aggregate contains {flattened.InnerExceptions.Count} inner exception(s). " +
-                $"First: {first.GetType().Name}: {first.Message}";
+                $"First: {first.GetType().Name}" +
+                (diagnostics.DataCapture == DataCapture.Values ? $": {first.Message}" : ".");
             diagnostics.Suggestion = "Inspect InnerExceptions for each individual failure.";
         }
     }

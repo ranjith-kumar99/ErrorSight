@@ -19,7 +19,7 @@ internal static class CaptureStore
     public static void Record(Exception exception, RuntimeMethodHandle method, RuntimeTypeHandle declaringType, int methodId, object?[]? values)
     {
         var options = ErrorSightRuntime.Options;
-        if (!options.CaptureRuntimeValues || !options.Capture.ShouldCapture(exception)) return;
+        if (!options.Capture.Enabled || !options.Capture.ShouldCapture(exception)) return;
 
         var frames = Captures.GetValue(exception, static _ => new FrameList());
         lock (frames)
@@ -53,8 +53,8 @@ internal static class CaptureStore
             }
 
             // A reused local slot is masked if any of its names is sensitive.
-            var sensitive = (slot.Flags & SlotFlags.Sensitive) != 0 || AnySensitiveScopeName(slot, options);
-            roots.Add(new CapturedRoot(slot, snapshotter.Snapshot(slot.Name, value, sensitive)));
+            var sensitive = slot.Scopes is { Count: > 1 } && slot.Scopes.Any(s => snapshotter.IsSensitiveName(s.Name));
+            roots.Add(new CapturedRoot(slot, snapshotter.Snapshot(slot.Name, value, sensitive, slot.TypeName)));
         }
 
         var frame = new CapturedFrame(metadata, method, declaringType, roots);
@@ -117,15 +117,8 @@ internal static class CaptureStore
             };
             if (name is null || field.FieldType.IsByRefLike || field.FieldType.IsPointer) continue;
 
-            roots.Add(new CapturedRoot(null, snapshotter.Snapshot(name, value, declaredSensitive: false)));
+            roots.Add(new CapturedRoot(null, snapshotter.Snapshot(name, value, forceMask: false, ValueSnapshotter.FriendlyName(field.FieldType))));
         }
-    }
-
-    private static bool AnySensitiveScopeName(WovenSlot slot, Options.ErrorSightOptions options)
-    {
-        if (slot.Scopes is not { Count: > 1 }) return false;
-        var masker = new Masking.ValueMasker(options.Masking);
-        return slot.Scopes.Any(s => masker.IsSensitiveName(s.Name));
     }
 
     /// <summary>Fixed one-second window rate limit across the process.</summary>

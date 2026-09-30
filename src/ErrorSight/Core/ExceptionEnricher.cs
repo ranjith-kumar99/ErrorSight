@@ -47,7 +47,7 @@ public sealed class ExceptionEnricher
     /// </summary>
     public ExceptionDiagnostics Enrich(Exception exception, string? correlationId = null)
     {
-        var frames = _options.CaptureRuntimeValues ? CaptureStore.Get(exception) : null;
+        var frames = _options.Capture.Enabled ? CaptureStore.Get(exception) : null;
         var frameCount = frames?.Count ?? 0;
 
         if (_cache.TryGetValue(exception, out var cached) && cached.FrameCount == frameCount)
@@ -64,11 +64,14 @@ public sealed class ExceptionEnricher
     private ExceptionDiagnostics EnrichCore(Exception exception, string? correlationId, IReadOnlyList<CapturedFrame>? frames, int depth)
     {
         var masker = new ValueMasker(_options.Masking);
+        var values = _options.DataCapture == DataCapture.Values;
         var diagnostics = new ExceptionDiagnostics
         {
             ExceptionType = exception.GetType().Name,
             FullTypeName = exception.GetType().FullName ?? exception.GetType().Name,
-            Message = exception.Message,
+            DataCapture = _options.DataCapture,
+            // Messages often embed application data (keys, ids, user input): only captured when values are.
+            Message = values ? exception.Message : null,
             Timestamp = DateTime.UtcNow,
             CorrelationId = correlationId
         };
@@ -87,15 +90,18 @@ public sealed class ExceptionEnricher
             diagnostics.Line = line;
 
             if (_options.IncludeSourceContext)
+            {
                 diagnostics.SourceContext = StackTraceParser.ReadSourceContext(exception, _options.SourceContextLines);
+                diagnostics.FailingSourceLine = StackTraceParser.ReadFailingLine(exception);
+            }
         }
 
-        // 2 ── Exception.Data entries (masked by name)
-        foreach (System.Collections.DictionaryEntry entry in exception.Data)
+        // 2 ── Exception.Data entries: application data, so only captured with values (masked by name)
+        foreach (System.Collections.DictionaryEntry entry in values ? exception.Data : EmptyData)
         {
             var key = entry.Key?.ToString() ?? string.Empty;
             var value = entry.Value;
-            diagnostics.AdditionalData[key] = value is not null && masker.ShouldMask(key, key, value.GetType(), false)
+            diagnostics.AdditionalData[key] = value is not null && masker.ShouldMask(key, key, value.GetType())
                 ? masker.Mask(value.ToString())
                 : value;
         }
@@ -123,7 +129,7 @@ public sealed class ExceptionEnricher
         // 6 ── Inner exception
         if (exception.InnerException is not null && _options.IncludeInnerException && depth < MaxInnerDepth)
         {
-            var innerFrames = _options.CaptureRuntimeValues ? CaptureStore.Get(exception.InnerException) : null;
+            var innerFrames = _options.Capture.Enabled ? CaptureStore.Get(exception.InnerException) : null;
             diagnostics.InnerException = EnrichCore(exception.InnerException, correlationId, innerFrames, depth + 1);
         }
 
@@ -148,6 +154,8 @@ public sealed class ExceptionEnricher
         d.Suggestion = d.Suggestion?.Replace(key, masked, StringComparison.Ordinal);
         if (d.Values.ContainsKey("missingKey")) d.Values["missingKey"] = new ValueDisplay(masked);
     }
+
+    private static readonly System.Collections.IDictionary EmptyData = new System.Collections.Hashtable();
 
     private sealed record CacheEntry(ExceptionDiagnostics Diagnostics, int FrameCount);
 }

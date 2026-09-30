@@ -2,12 +2,12 @@ using System.Collections;
 
 namespace ErrorSight.Masking;
 
-/// <summary>Which captured values are masked.</summary>
+/// <summary>Which captured values are masked (values are only captured at <c>DataCapture.Values</c>).</summary>
 public enum MaskingMode
 {
-    /// <summary>Mask only values whose name or declaration marks them as sensitive (default).</summary>
+    /// <summary>Mask only values whose name marks them as sensitive (default).</summary>
     SensitiveOnly,
-    /// <summary>Mask every value; only types and null/not-null are reported. Production-safe.</summary>
+    /// <summary>Mask every captured value; only types and null/not-null are reported.</summary>
     All,
     /// <summary>Report every value as-is.</summary>
     None,
@@ -18,8 +18,6 @@ public enum MaskStyle
 {
     /// <summary><c>***</c></summary>
     Redact,
-    /// <summary><c>sha256:1a2b3c4d</c> — lets you correlate equal values without revealing them.</summary>
-    Hash,
     /// <summary><c>***1234</c> — keeps the last four characters of values at least 8 characters long.</summary>
     Partial,
 }
@@ -31,13 +29,13 @@ public enum MaskStyle
 public readonly record struct MaskingContext(string Path, string Name, Type? ValueType);
 
 /// <summary>
-/// Controls how captured runtime values are masked. Masking is applied at capture time, so masked
-/// values are never held in memory, logged, or exported.
+/// Controls how runtime values are masked once you opt in to capturing them (<c>DataCapture.Values</c>).
+/// Masking is applied at capture time, so masked values are never held in memory, logged, or exported.
 ///
 /// <code>
 ///   builder.Services.AddErrorSight(o =>
 ///   {
-///       o.Masking.Mode = MaskingMode.All;           // production: types and null-ness only
+///       o.DataCapture = DataCapture.Values;
 ///       o.Masking.SensitiveNames.Add("iban");
 ///       o.Masking.ShouldMask = ctx => ctx.Path.StartsWith("patient.");
 ///   });

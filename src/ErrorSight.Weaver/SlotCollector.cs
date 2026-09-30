@@ -41,11 +41,12 @@ internal static class SlotCollector
             {
                 slots.Add(Slot("this", SlotKind.This,
                     shape == MethodShape.DisplayClassLambda ? SlotFlags.Closure : SlotFlags.None,
+                    CecilHelpers.FriendlyTypeName(selfType),
                     Instruction.Create(OpCodes.Ldarg, body.ThisParameter)));
             }
             else if (CecilHelpers.IsCapturable(selfType))
             {
-                slots.Add(Slot("this", SlotKind.This, SlotFlags.None,
+                slots.Add(Slot("this", SlotKind.This, SlotFlags.None, CecilHelpers.FriendlyTypeName(selfType),
                     Instruction.Create(OpCodes.Ldarg, body.ThisParameter),
                     Instruction.Create(OpCodes.Ldobj, selfType),
                     Instruction.Create(OpCodes.Box, selfType)));
@@ -55,7 +56,6 @@ internal static class SlotCollector
         // ── state machine fields (hoisted locals and parameters) ───────────────
         if (shape == MethodShape.StateMachineMoveNext)
         {
-            var sensitiveParameters = SensitiveKickoffParameters(self);
             foreach (var field in self.Fields)
             {
                 if (field.IsStatic) continue;
@@ -65,10 +65,8 @@ internal static class SlotCollector
                 if (name is null || !CecilHelpers.IsCapturable(field.FieldType)) continue;
 
                 var flags = isClosure ? SlotFlags.Closure : SlotFlags.None;
-                if (sensitiveParameters.Contains(name)) flags |= SlotFlags.Sensitive;
-
                 var fieldReference = CecilHelpers.SelfField(field);
-                slots.Add(Slot(name, SlotKind.Field, flags,
+                slots.Add(Slot(name, SlotKind.Field, flags, CecilHelpers.FriendlyTypeName(field.FieldType),
                     Instruction.Create(OpCodes.Ldarg, body.ThisParameter),
                     Instruction.Create(OpCodes.Ldfld, fieldReference),
                     Instruction.Create(OpCodes.Box, fieldReference.FieldType)));
@@ -79,7 +77,7 @@ internal static class SlotCollector
         foreach (var parameter in method.Parameters)
         {
             var type = parameter.ParameterType;
-            var flags = CecilHelpers.HasSensitiveAttribute(parameter) ? SlotFlags.Sensitive : SlotFlags.None;
+            var flags = SlotFlags.None;
 
             if (type is ByReferenceType byRef)
             {
@@ -90,7 +88,7 @@ internal static class SlotCollector
                 var name = isClosure ? "<closure>" : parameter.Name;
                 if (string.IsNullOrEmpty(name)) continue;
 
-                slots.Add(Slot(name, SlotKind.Argument, flags,
+                slots.Add(Slot(name, SlotKind.Argument, flags, CecilHelpers.FriendlyTypeName(element),
                     Instruction.Create(OpCodes.Ldarg, parameter),
                     Instruction.Create(OpCodes.Ldobj, element),
                     Instruction.Create(OpCodes.Box, element)));
@@ -103,7 +101,7 @@ internal static class SlotCollector
                 var name = isClosure ? "<closure>" : parameter.Name;
                 if (string.IsNullOrEmpty(name)) continue;
 
-                slots.Add(Slot(name, SlotKind.Argument, flags,
+                slots.Add(Slot(name, SlotKind.Argument, flags, CecilHelpers.FriendlyTypeName(type),
                     Instruction.Create(OpCodes.Ldarg, parameter),
                     Instruction.Create(OpCodes.Box, type)));
             }
@@ -124,7 +122,13 @@ internal static class SlotCollector
 
             slots.Add(new CapturedSlot
             {
-                Meta = new WovenSlot { Name = primary, Kind = SlotKind.Local, Flags = flags },
+                Meta = new WovenSlot
+                {
+                    Name = primary,
+                    Kind = SlotKind.Local,
+                    Flags = flags,
+                    TypeName = CecilHelpers.FriendlyTypeName(variable.VariableType),
+                },
                 Loader =
                 [
                     Instruction.Create(OpCodes.Ldloc, variable),
@@ -172,29 +176,9 @@ internal static class SlotCollector
         return result.Select(kv => (kv.Key, kv.Value)).ToList();
     }
 
-    private static HashSet<string> SensitiveKickoffParameters(TypeDefinition stateMachine)
+    private static CapturedSlot Slot(string name, SlotKind kind, SlotFlags flags, string typeName, params Instruction[] loader) => new()
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        var outer = stateMachine.DeclaringType;
-        if (outer is null) return result;
-
-        foreach (var method in outer.Methods)
-        {
-            if (!CecilHelpers.IsKickoffMethod(method)) continue;
-            var attribute = method.CustomAttributes.FirstOrDefault(a => a.AttributeType.Name.EndsWith("StateMachineAttribute", StringComparison.Ordinal));
-            if (attribute?.ConstructorArguments.FirstOrDefault().Value is not TypeReference target ||
-                target.Resolve() != stateMachine) continue;
-
-            foreach (var parameter in method.Parameters)
-                if (CecilHelpers.HasSensitiveAttribute(parameter)) result.Add(parameter.Name);
-        }
-
-        return result;
-    }
-
-    private static CapturedSlot Slot(string name, SlotKind kind, SlotFlags flags, params Instruction[] loader) => new()
-    {
-        Meta = new WovenSlot { Name = name, Kind = kind, Flags = flags },
+        Meta = new WovenSlot { Name = name, Kind = kind, Flags = flags, TypeName = typeName },
         Loader = loader.ToList(),
     };
 }

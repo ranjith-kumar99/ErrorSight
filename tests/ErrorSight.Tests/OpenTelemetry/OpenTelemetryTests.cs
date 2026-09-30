@@ -2,6 +2,7 @@ using System.Diagnostics;
 using ErrorSight.Core;
 using ErrorSight.Extensions;
 using ErrorSight.Integrations.OpenTelemetry;
+using ErrorSight.Options;
 using ErrorSight.Tests.Weaving;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -40,7 +41,48 @@ public sealed class OpenTelemetryTests
         tags[Conventions.SourceFile].Should().Be("OrderService.cs");
         tags[Conventions.SourceLine].Should().BeOfType<int>().Which.Should().BePositive();
         tags[Conventions.Method].Should().Be("OrderService.GetCity");
-        tags[Conventions.Values].Should().BeOfType<string>().Which.Should().Contain("\"order.Customer.Address\":null");
+        tags[Conventions.DataCapture].Should().Be("none");
+    }
+
+    [Fact]
+    public async Task Default_SendsNoApplicationData()
+    {
+        var spans = await RunFailingRequest(configureApp: null);
+
+        var span = spans.Single(a => a.Kind == ActivityKind.Server);
+        var diagnosed = span.Events.Single(e => e.Name == Conventions.DiagnosedEvent);
+        var keys = diagnosed.Tags.Select(t => t.Key).ToList();
+        keys.Should().NotContain(new[] { Conventions.Values, Conventions.ExceptionMessage, Conventions.ObjectType, Conventions.CollectionCount });
+        // (url.path from the ASP.NET Core instrumentation contains the order id; ErrorSight's own attributes must not)
+        var ours = diagnosed.Tags.Concat(span.TagObjects.Where(t => t.Key.StartsWith("errorsight.", StringComparison.Ordinal)));
+        var text = string.Join("|", ours.Select(t => t.Value?.ToString()));
+        text.Should().NotContain("Jane Doe").And.NotContain("1837").And.NotContain("jane@example.com");
+    }
+
+    [Fact]
+    public async Task Metadata_AddsTypesButNoValues()
+    {
+        var spans = await RunFailingRequest(configureApp: null, configure: o => o.DataCapture = DataCapture.Metadata);
+
+        var tags = spans.Single(a => a.Kind == ActivityKind.Server).Events
+            .Single(e => e.Name == Conventions.DiagnosedEvent).Tags.ToDictionary(t => t.Key, t => t.Value);
+        tags[Conventions.ObjectType].Should().Be("Address");
+        tags[Conventions.ObjectNull].Should().Be(true);
+        tags[Conventions.Member].Should().Be("Address");
+        tags.Should().NotContainKey(Conventions.Values).And.NotContainKey(Conventions.ExceptionMessage);
+    }
+
+    [Fact]
+    public async Task Values_OptIn_SendsMaskedValuesOfTheFailingChain()
+    {
+        var spans = await RunFailingRequest(configureApp: null, configure: o => o.DataCapture = DataCapture.Values);
+
+        var tags = spans.Single(a => a.Kind == ActivityKind.Server).Events
+            .Single(e => e.Name == Conventions.DiagnosedEvent).Tags.ToDictionary(t => t.Key, t => t.Value);
+        var values = tags[Conventions.Values].Should().BeOfType<string>().Subject;
+        values.Should().Contain("\"order.Customer.Address\":null").And.Contain("Email = ***");
+        values.Should().NotContain("jane@example.com");
+        tags.Should().ContainKey(Conventions.ExceptionMessage);
     }
 
     [Fact]

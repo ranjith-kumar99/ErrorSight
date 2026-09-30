@@ -2,14 +2,16 @@ using ErrorSight.Masking;
 
 namespace ErrorSight.Options;
 
-/// <summary>Configuration for the ErrorSight enrichment pipeline.</summary>
+/// <summary>Configuration for ErrorSight.</summary>
 public sealed class ErrorSightOptions
 {
     /// <summary>
-    /// Capture the values of parameters, locals and <c>this</c> at the throw site (requires the build-time
-    /// instrumentation that the ErrorSight package adds to your project). Default: true.
+    /// How much application data is captured. Default: <see cref="Options.DataCapture.None"/>, which is diagnostic
+    /// structure only (exception type, source location, method, the null expression and its origin) and never
+    /// runtime values. Use <see cref="Options.DataCapture.Metadata"/> for counts, lengths and signs, or
+    /// <see cref="Options.DataCapture.Values"/> to capture values, masked by <see cref="Masking"/>.
     /// </summary>
-    public bool CaptureRuntimeValues { get; set; } = true;
+    public DataCapture DataCapture { get; set; } = DataCapture.None;
 
     /// <summary>Report the source file, line and method of the failure. Default: true.</summary>
     public bool CaptureSourceLocation { get; set; } = true;
@@ -20,17 +22,20 @@ public sealed class ErrorSightOptions
     /// </summary>
     public bool SendToOpenTelemetry { get; set; } = true;
 
-    /// <summary>Limits for runtime value capture.</summary>
+    /// <summary>Limits and switches for capture at throw time.</summary>
     public CaptureOptions Capture { get; } = new();
 
-    /// <summary>Masking of captured values. Sensitive names are masked by default.</summary>
+    /// <summary>
+    /// Masking of captured values (<see cref="Options.DataCapture.Values"/>). Sensitive names and members declared
+    /// sensitive are masked by default.
+    /// </summary>
     public MaskingOptions Masking { get; } = new();
 
     /// <summary>
-    /// Read source-code context lines when the source files exist on disk.
-    /// Useful in development; production containers usually don't ship source files.
+    /// Read source lines from disk, when the files exist, for the text banner and to name the failing expression
+    /// in methods that are not instrumented. Default: false, so ErrorSight does not read or capture source code.
     /// </summary>
-    public bool IncludeSourceContext { get; set; } = true;
+    public bool IncludeSourceContext { get; set; }
 
     /// <summary>Number of lines of source context above/below the failing line.</summary>
     public int SourceContextLines { get; set; } = 2;

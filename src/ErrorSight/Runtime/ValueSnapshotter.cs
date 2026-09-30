@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Globalization;
 using System.Numerics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -9,9 +8,14 @@ using ErrorSight.Options;
 namespace ErrorSight.Runtime;
 
 /// <summary>
-/// Turns live objects into immutable <see cref="CapturedValue"/> trees, applying masking as it goes.
+/// Turns live objects into immutable <see cref="CapturedValue"/> trees at the configured
+/// <see cref="ErrorSightOptions.DataCapture"/> level:
+///   • None: names, types and null-ness only, which is enough to tell which expression was null. No values
+///     are kept, and dictionary entries (whose keys are application data) are not read;
+///   • Metadata: also collection counts;
+///   • Values: also the values themselves, masked as they are captured.
 ///
-/// Safety rules — this runs inside an exception filter, in the middle of the application's failure:
+/// Safety rules. This runs inside an exception filter, in the middle of the application's failure:
 ///   • it never executes user code: no property getters, no ToString() overrides, no user enumerators;
 ///     objects are read through their fields (auto-property backing fields map to property names),
 ///     which also avoids side effects such as EF Core lazy loading;
@@ -25,8 +29,19 @@ internal sealed class ValueSnapshotter
     private static readonly ConditionalWeakTable<Type, MemberCache> Members = new();
     private static readonly ConditionalWeakTable<Type, string> FriendlyNames = new();
 
+    private static readonly Dictionary<Type, string> Keywords = new()
+    {
+        [typeof(string)] = "string", [typeof(int)] = "int", [typeof(long)] = "long", [typeof(short)] = "short",
+        [typeof(byte)] = "byte", [typeof(sbyte)] = "sbyte", [typeof(uint)] = "uint", [typeof(ulong)] = "ulong",
+        [typeof(ushort)] = "ushort", [typeof(bool)] = "bool", [typeof(char)] = "char", [typeof(decimal)] = "decimal",
+        [typeof(double)] = "double", [typeof(float)] = "float", [typeof(object)] = "object",
+        [typeof(nint)] = "nint", [typeof(nuint)] = "nuint",
+    };
+
     private readonly CaptureOptions _limits;
     private readonly ValueMasker _masker;
+    private readonly DataCapture _level;
+    private readonly bool _values;
     private readonly bool _trackPaths;
     private readonly HashSet<object> _path = new(ReferenceEqualityComparer.Instance);
     private int _nodes;
@@ -35,62 +50,99 @@ internal sealed class ValueSnapshotter
     {
         _limits = options.Capture;
         _masker = new ValueMasker(options.Masking);
-        _trackPaths = options.Masking.ShouldMask is not null;
+        _level = options.DataCapture;
+        _values = _level == DataCapture.Values;
+        _trackPaths = _values && options.Masking.ShouldMask is not null;
     }
 
-    public CapturedValue Snapshot(string name, object? value, bool declaredSensitive) =>
-        Build(name, _trackPaths ? name : null, value, declaredSensitive, depth: 0);
+    public DataCapture Level => _level;
+
+    public bool IsSensitiveName(string name) => _masker.Mode != MaskingMode.None && _masker.IsSensitiveName(name);
+
+    public CapturedValue Snapshot(string name, object? value, bool forceMask, string? declaredType) =>
+        Build(name, _trackPaths ? name : null, value, forceMask, declaredType, depth: 0);
 
     /// <summary>Member paths are only needed by a custom <see cref="MaskingOptions.ShouldMask"/> predicate.</summary>
-    private string? Child(string? path, string member) => path is null ? null : path + member;
+    private static string? Child(string? path, string member) => path is null ? null : path + member;
 
-    private CapturedValue Build(string name, string? path, object? value, bool declaredSensitive, int depth)
+    private CapturedValue Build(string name, string? path, object? value, bool forceMask, string? declaredType, int depth)
     {
         _nodes++;
-        if (value is null) return new CapturedValue { Name = name, IsNull = true, Value = "null" };
+        if (value is null)
+        {
+            return new CapturedValue
+            {
+                Name = name,
+                IsNull = true,
+                Type = string.IsNullOrEmpty(declaredType) ? null : declaredType,
+                Level = _level,
+                Value = _values ? "null" : null,
+            };
+        }
 
         var type = value.GetType();
         var typeName = FriendlyName(type);
-        var masked = _masker.ShouldMask(path ?? name, name, type, declaredSensitive);
+        var masked = _values && (forceMask || _masker.ShouldMask(path ?? name, name, type));
 
         if (IsScalar(type))
         {
+            if (!_values) return new CapturedValue { Name = name, Type = typeName, Level = _level };
             if (masked)
-                return new CapturedValue { Name = name, Type = typeName, Value = _masker.Mask(CapturedValue.RawText(value, _limits.MaxStringLength)), IsMasked = true };
-            return new CapturedValue { Name = name, Type = typeName, Raw = value, Rendering = ValueRendering.Scalar, MaxStringLength = _limits.MaxStringLength };
+                return new CapturedValue { Name = name, Type = typeName, Level = _level, Value = _masker.Mask(CapturedValue.RawText(value, _limits.MaxStringLength)), IsMasked = true };
+            return new CapturedValue { Name = name, Type = typeName, Level = _level, Raw = value, Rendering = ValueRendering.Scalar, MaxStringLength = _limits.MaxStringLength };
         }
 
-        // A sensitive object is hidden entirely (only in SensitiveOnly mode; Mode=All still walks
-        // objects so that null-ness of members stays visible).
+        // A sensitive object is hidden entirely (Mode=All still walks objects so that null-ness of members stays visible).
         if (masked && _masker.Mode != MaskingMode.All)
-            return new CapturedValue { Name = name, Type = typeName, Value = "***", IsMasked = true };
+            return new CapturedValue { Name = name, Type = typeName, Level = _level, Value = "***", IsMasked = true };
 
         if (_path.Contains(value))
-            return new CapturedValue { Name = name, Type = typeName, Value = $"{typeName} {{ (cycle) }}" };
+            return new CapturedValue { Name = name, Type = typeName, Level = _level, Value = _values ? $"{typeName} {{ (cycle) }}" : null };
 
         if (depth >= _limits.MaxDepth || _nodes >= MaxNodes)
-            return new CapturedValue { Name = name, Type = typeName, Rendering = ValueRendering.Truncated, Count = CountOf(value) };
+        {
+            return new CapturedValue
+            {
+                Name = name, Type = typeName, Level = _level,
+                Rendering = _values ? ValueRendering.Truncated : ValueRendering.None,
+                Count = _level >= DataCapture.Metadata ? CountOf(value) : null,
+            };
+        }
 
         _path.Add(value);
         try
         {
             if (IsWalkableCollection(value, type))
-                return BuildCollection(name, path, value, type, typeName, depth);
+                return BuildCollection(name, path, value, typeName, depth);
 
             if (IsFrameworkType(type))
-                return new CapturedValue { Name = name, Type = typeName, Rendering = ValueRendering.Truncated };
+                return new CapturedValue { Name = name, Type = typeName, Level = _level, Rendering = _values ? ValueRendering.Truncated : ValueRendering.None };
 
             var members = new List<CapturedValue>();
             foreach (var member in Members.GetValue(type, t => new MemberCache(t)).Get(_limits.IncludePrivateFields))
             {
                 if (members.Count >= _limits.MaxMembersPerObject || _nodes >= MaxNodes) break;
+
+                if (!_values && member.NeverNull)
+                {
+                    // Only null-ness matters without values: a non-nullable scalar is not even read (no boxing).
+                    _nodes++;
+                    members.Add(new CapturedValue { Name = member.Name, Type = member.TypeName, Level = _level });
+                    continue;
+                }
+
                 object? memberValue;
                 try { memberValue = member.Field.GetValue(value); }
                 catch { continue; }
-                members.Add(Build(member.Name, Child(path, "." + member.Name), memberValue, member.Sensitive, depth + 1));
+                members.Add(Build(member.Name, Child(path, "." + member.Name), memberValue, forceMask: false, member.TypeName, depth + 1));
             }
 
-            return new CapturedValue { Name = name, Type = typeName, Rendering = ValueRendering.Summary, Members = members };
+            return new CapturedValue
+            {
+                Name = name, Type = typeName, Level = _level,
+                Rendering = _values ? ValueRendering.Summary : ValueRendering.None,
+                Children = members,
+            };
         }
         finally
         {
@@ -98,7 +150,7 @@ internal sealed class ValueSnapshotter
         }
     }
 
-    private CapturedValue BuildCollection(string name, string? path, object value, Type type, string typeName, int depth)
+    private CapturedValue BuildCollection(string name, string? path, object value, string typeName, int depth)
     {
         var count = CountOf(value);
         var items = new List<CapturedValue>();
@@ -107,11 +159,15 @@ internal sealed class ValueSnapshotter
         {
             if (value is IDictionary dictionary)
             {
-                foreach (DictionaryEntry entry in dictionary)
+                // Keys are application data (ids, emails, ...): entries are only read when values are captured.
+                if (_values)
                 {
-                    if (items.Count >= _limits.MaxCollectionItems || _nodes >= MaxNodes) break;
-                    var key = $"[{FormatScalarOrType(entry.Key)}]";
-                    items.Add(Build(key, Child(path, key), entry.Value, declaredSensitive: false, depth + 1));
+                    foreach (DictionaryEntry entry in dictionary)
+                    {
+                        if (items.Count >= _limits.MaxCollectionItems || _nodes >= MaxNodes) break;
+                        var key = $"[{FormatScalarOrType(entry.Key)}]";
+                        items.Add(Build(key, Child(path, key), entry.Value, forceMask: false, declaredType: null, depth + 1));
+                    }
                 }
             }
             else
@@ -121,16 +177,25 @@ internal sealed class ValueSnapshotter
                 {
                     if (items.Count >= _limits.MaxCollectionItems || _nodes >= MaxNodes) break;
                     var key = $"[{index++}]";
-                    items.Add(Build(key, Child(path, key), item, declaredSensitive: false, depth + 1));
+                    items.Add(Build(key, Child(path, key), item, forceMask: false, declaredType: null, depth + 1));
                 }
             }
         }
         catch
         {
-            // Collection modified concurrently etc. — keep what we have.
+            // Collection modified concurrently etc. Keep what we have.
         }
 
-        return new CapturedValue { Name = name, Type = typeName, Rendering = ValueRendering.Collection, Count = count, Members = items };
+        return new CapturedValue
+        {
+            Name = name,
+            Type = typeName,
+            Level = _level,
+            Rendering = _values ? ValueRendering.Collection : ValueRendering.None,
+            Count = _level >= DataCapture.Metadata ? count : null,
+            Children = items,
+            Complete = count is { } total && items.Count == total,
+        };
     }
 
     // ── Formatting ───────────────────────────────────────────────────────────
@@ -185,7 +250,10 @@ internal sealed class ValueSnapshotter
 
     private static string ComputeFriendlyName(Type type)
     {
-        if (type.IsArray) return FriendlyName(type.GetElementType()!) + "[]";
+        if (Keywords.TryGetValue(type, out var keyword)) return keyword;
+        if (type.IsArray) return FriendlyName(type.GetElementType()!) + "[" + new string(',', type.GetArrayRank() - 1) + "]";
+        if (Nullable.GetUnderlyingType(type) is { } underlying) return FriendlyName(underlying) + "?";
+        if (type.IsGenericParameter) return type.Name;
         if (type.Name.StartsWith("<>f__AnonymousType", StringComparison.Ordinal)) return "anonymous";
 
         var name = type.Name;
@@ -221,15 +289,13 @@ internal sealed class ValueSnapshotter
                 foreach (var field in current.GetFields(flags))
                 {
                     string name;
-                    bool include, sensitive;
+                    bool include;
 
                     if (field.Name.StartsWith('<') && field.Name.EndsWith(">k__BackingField", StringComparison.Ordinal))
                     {
                         name = field.Name[1..field.Name.IndexOf('>')];
                         var property = current.GetProperty(name, flags);
                         include = includePrivate || property?.GetMethod?.IsPublic == true;
-                        sensitive = ValueMasker.HasSensitiveAttribute(field) ||
-                                    (property is not null && ValueMasker.HasSensitiveAttribute(property));
                     }
                     else if (field.Name.StartsWith('<'))
                     {
@@ -239,11 +305,11 @@ internal sealed class ValueSnapshotter
                     {
                         name = field.Name;
                         include = includePrivate || field.IsPublic;
-                        sensitive = ValueMasker.HasSensitiveAttribute(field);
                     }
 
                     if (!include || field.FieldType.IsPointer || field.FieldType.IsByRefLike) continue;
-                    if (names.Add(name)) result.Add(new MemberAccessor(name, field, sensitive));
+                    var neverNull = field.FieldType.IsValueType && IsScalar(field.FieldType);
+                    if (names.Add(name)) result.Add(new MemberAccessor(name, field, FriendlyName(field.FieldType), neverNull));
                 }
             }
 
@@ -251,5 +317,6 @@ internal sealed class ValueSnapshotter
         }
     }
 
-    private sealed record MemberAccessor(string Name, FieldInfo Field, bool Sensitive);
+    /// <param name="NeverNull">A non-nullable scalar (int, decimal, enum, ...): its null-ness and type are known without reading it.</param>
+    private sealed record MemberAccessor(string Name, FieldInfo Field, string TypeName, bool NeverNull);
 }

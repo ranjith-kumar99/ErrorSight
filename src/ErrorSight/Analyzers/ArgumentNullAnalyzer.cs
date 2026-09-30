@@ -19,9 +19,6 @@ public sealed class ArgumentNullAnalyzer : IExceptionAnalyzer
                 diagnostics.NullExpression = ane.ParamName;
                 diagnostics.PossibleCause = $"Parameter '{ane.ParamName}' is null.";
                 diagnostics.Suggestion = $"Ensure the caller passes a non-null value for '{ane.ParamName}'.";
-
-                if (!diagnostics.Values.ContainsKey(ane.ParamName))
-                    diagnostics.Values[ane.ParamName] = null;
             }
         }
         else if (exception is ArgumentException ae)

@@ -35,7 +35,7 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
         if (d.NullExpression is not null)
         {
             sb.AppendLine("❌ NULL VALUE:");
-            sb.AppendLine(Indent + d.NullExpression);
+            sb.AppendLine(Indent + d.NullExpression + (d.NullType is not null ? $"  ({d.NullType})" : string.Empty));
             sb.AppendLine();
         }
 
@@ -52,6 +52,21 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
         {
             sb.AppendLine("Expression:");
             sb.AppendLine(Indent + d.FailingExpression);
+            sb.AppendLine();
+        }
+
+        // ── Origin: where the null came from ───────────────────────────────
+        if (d.NullOrigin is { } origin)
+        {
+            string At(int? line) => line is null ? string.Empty : d.SourceFileShort is { } file ? $"{file}:{line}" : $"line {line}";
+            var failing = d.FailingExpression ?? d.NullExpression!;
+            var width = Math.Max(origin.Expression.Length, failing.Length) + 2;
+            sb.AppendLine("Origin:");
+            sb.AppendLine(Indent + origin.Expression.PadRight(width) + $"assigned to {origin.Variable}  {At(origin.Line)}".TrimEnd());
+            sb.AppendLine(Indent + "  ↓");
+            sb.AppendLine(Indent + failing.PadRight(width) + $"dereferenced  {At(d.Line)}".TrimEnd());
+            sb.AppendLine(Indent + "  ↓");
+            sb.AppendLine(Indent + d.ExceptionType);
             sb.AppendLine();
         }
 
@@ -143,7 +158,7 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
         }
 
         // ── Values in calling frames ──────────────────────────────────────
-        var callers = d.Frames.Skip(1).Where(f => f.Values.Count > 0).Take(3).ToList();
+        var callers = d.Frames.Skip(1).Where(f => f.Values.Any(v => v.Value is not null)).Take(3).ToList();
         if (callers.Count > 0)
         {
             sb.AppendLine("Caller values:");
@@ -202,7 +217,7 @@ public sealed class TextExceptionFormatter : IExceptionFormatter
         if (d.InnerException is not null)
         {
             sb.AppendLine("Inner exception:");
-            sb.AppendLine(Indent + $"{d.InnerException.ExceptionType}: {d.InnerException.Message}");
+            sb.AppendLine(Indent + d.InnerException.ExceptionType + (d.InnerException.Message is { } message ? $": {message}" : string.Empty));
             sb.AppendLine();
         }
 

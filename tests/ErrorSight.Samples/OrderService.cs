@@ -161,6 +161,13 @@ public class OrderService
         }
     }
 
+    public string ShippingCity(Customer customer)
+    {
+        var address = customer.Address;
+        Counter += address is null ? 0 : 1;
+        return address.City.Name;
+    }
+
     [ErrorSightIgnore]
     public string Ignored(Order order)
     {

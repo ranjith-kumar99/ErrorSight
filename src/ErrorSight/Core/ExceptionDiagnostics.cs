@@ -1,11 +1,13 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using ErrorSight.Options;
 using ErrorSight.Runtime;
 
 namespace ErrorSight.Core;
 
 /// <summary>
-/// Structured runtime diagnostic snapshot of a captured exception.
+/// Structured diagnosis of an exception. What it contains depends on <see cref="DataCapture"/>: by default only
+/// diagnostic structure (type, location, the null expression and its origin), never application data.
 /// Serializes cleanly to JSON for shipping to Serilog, Application Insights,
 /// OpenTelemetry, Datadog, CloudWatch, or any structured-log sink.
 /// </summary>
@@ -14,7 +16,13 @@ public sealed class ExceptionDiagnostics
     // ── Identity ────────────────────────────────────────────────────────────
     public string ExceptionType { get; init; } = string.Empty;
     public string FullTypeName { get; init; } = string.Empty;
-    public string Message { get; set; } = string.Empty;
+    /// <summary>
+    /// The exception message. Messages often embed application data, so it is only included at
+    /// <see cref="DataCapture.Values"/>; null otherwise.
+    /// </summary>
+    public string? Message { get; set; }
+    /// <summary>The data-capture level these diagnostics were produced with.</summary>
+    public DataCapture DataCapture { get; init; }
     public DateTime Timestamp { get; init; } = DateTime.UtcNow;
     public string? CorrelationId { get; set; }
 
@@ -35,34 +43,49 @@ public sealed class ExceptionDiagnostics
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string[]? NullCandidates { get; set; }
+    /// <summary>Declared type of the null expression, e.g. <c>Address</c> (<see cref="DataCapture.Metadata"/> and above).</summary>
+    public string? NullType { get; set; }
+    /// <summary>
+    /// Where the null came from when the null expression starts at a local variable, e.g. <c>address</c> was
+    /// assigned <c>customer.Address</c> on line 128.
+    /// </summary>
+    public NullOrigin? NullOrigin { get; set; }
     /// <summary>Full source expression on the faulting line.</summary>
     public string? FailingExpression { get; set; }
     public string[]? SourceContext { get; set; }
+    /// <summary>The failing source line, read only when <see cref="ErrorSightOptions.IncludeSourceContext"/> is on.</summary>
+    [JsonIgnore]
+    internal string? FailingSourceLine { get; set; }
 
     // ── Type-specific fields ─────────────────────────────────────────────────
     /// <summary>Parameter name (ArgumentNullException / ArgumentException).</summary>
     public string? ParameterName { get; set; }
-    /// <summary>Missing key (KeyNotFoundException).</summary>
+    /// <summary>Missing key (KeyNotFoundException; <see cref="DataCapture.Values"/> only).</summary>
     public string? MissingKey { get; set; }
-    /// <summary>Requested index (IndexOutOfRangeException).</summary>
+    /// <summary>Requested index (IndexOutOfRangeException; <see cref="DataCapture.Values"/> only).</summary>
     public int? RequestedIndex { get; set; }
-    /// <summary>Collection length at time of access.</summary>
+    /// <summary>Collection length at time of access (<see cref="DataCapture.Metadata"/> and above).</summary>
     public int? CollectionLength { get; set; }
-    /// <summary>Collection or dictionary variable name.</summary>
+    /// <summary>Collection or dictionary expression, e.g. <c>order.Lines</c>.</summary>
     public string? CollectionName { get; set; }
+    /// <summary>Collection type, e.g. <c>List&lt;OrderLine&gt;</c> (<see cref="DataCapture.Metadata"/> and above).</summary>
+    public string? CollectionType { get; set; }
     public string? ValidIndexRange { get; set; }
     /// <summary>Operation that failed (InvalidOperationException).</summary>
     public string? OperationName { get; set; }
 
     // ── Captured runtime values ──────────────────────────────────────────────
     /// <summary>
-    /// Variable/expression → value pairs at the throw site, captured automatically by the build-time
-    /// instrumentation (already masked). Captured values are <see cref="ValueDisplay"/> text; null means
-    /// the value was null.
+    /// Expression → value pairs for the expressions involved in the failure (e.g. the chain that was null),
+    /// already masked. Only filled at <see cref="DataCapture.Values"/>. Captured values are
+    /// <see cref="ValueDisplay"/> text; null means the value was null.
     /// </summary>
     public Dictionary<string, object?> Values { get; } = new(StringComparer.Ordinal);
 
-    /// <summary>Values captured in each instrumented frame, innermost (throw site) first.</summary>
+    /// <summary>
+    /// Each instrumented frame, innermost (throw site) first, with its variables at the configured level
+    /// (names and types; values only at <see cref="DataCapture.Values"/>).
+    /// </summary>
     public List<FrameDiagnostics> Frames { get; } = new();
 
     // ── Call chain ───────────────────────────────────────────────────────────
@@ -78,6 +101,19 @@ public sealed class ExceptionDiagnostics
     // ── Inner exception ──────────────────────────────────────────────────────
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExceptionDiagnostics? InnerException { get; set; }
+}
+
+/// <summary>
+/// Where a null value came from: the assignment to the local variable at the start of the null expression.
+/// </summary>
+public sealed class NullOrigin
+{
+    /// <summary>The local variable, e.g. <c>address</c>.</summary>
+    public string Variable { get; init; } = string.Empty;
+    /// <summary>What was assigned to it, e.g. <c>customer.Address</c>, <c>this.FindAddress(…)</c> or <c>null</c>.</summary>
+    public string Expression { get; init; } = string.Empty;
+    /// <summary>Source line of the assignment.</summary>
+    public int? Line { get; init; }
 }
 
 /// <summary>Values captured in one instrumented stack frame.</summary>

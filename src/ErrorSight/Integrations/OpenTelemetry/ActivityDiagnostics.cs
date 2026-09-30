@@ -11,7 +11,7 @@ namespace ErrorSight.Integrations.OpenTelemetry;
 /// </summary>
 public static class ErrorSightSemanticConventions
 {
-    /// <summary>Span event carrying the full diagnosis.</summary>
+    /// <summary>Span event carrying the diagnosis.</summary>
     public const string DiagnosedEvent = "errorsight.exception.diagnosed";
 
     // ── Span attributes (small, searchable) ─────────────────────────────────
@@ -24,24 +24,43 @@ public static class ErrorSightSemanticConventions
     /// <summary><c>OrderService.ProcessOrder</c></summary>
     public const string CauseMethod = "errorsight.cause.method";
 
-    // ── Event attributes ────────────────────────────────────────────────────
+    // ── Event attributes: structure (always) ─────────────────────────────────
     public const string ExceptionType = "exception.type";
-    public const string ExceptionMessage = "exception.message";
+    /// <summary><c>none</c>, <c>metadata</c> or <c>values</c>.</summary>
+    public const string DataCapture = "errorsight.data_capture";
     public const string NullExpression = "errorsight.null.expression";
     /// <summary><c>order → Customer → Address</c></summary>
     public const string NullChain = "errorsight.null.chain";
     public const string NullCandidates = "errorsight.null.candidates";
+    /// <summary>What the null local variable was assigned, e.g. <c>customer.Address</c>.</summary>
+    public const string OriginExpression = "errorsight.origin.expression";
+    public const string OriginVariable = "errorsight.origin.variable";
+    /// <summary>Line of that assignment.</summary>
+    public const string OriginLine = "errorsight.origin.line";
     public const string FailingExpression = "errorsight.failing_expression";
     public const string SourceFile = "errorsight.source.file";
     public const string SourceLine = "errorsight.source.line";
     public const string Method = "errorsight.method";
     public const string Cause = "errorsight.cause";
     public const string Suggestion = "errorsight.suggestion";
-    /// <summary>JSON object of the (masked) runtime values at the throw site.</summary>
-    public const string Values = "errorsight.values";
     public const string Parameter = "errorsight.parameter";
+    public const string CollectionName = "errorsight.collection.name";
+
+    // ── Event attributes: metadata (DataCapture.Metadata and above) ─────────
+    /// <summary>Declared type of the null expression, e.g. <c>Address</c>.</summary>
+    public const string ObjectType = "errorsight.object.type";
+    public const string ObjectNull = "errorsight.object.null";
+    /// <summary>The member that was null, e.g. <c>Address</c>.</summary>
+    public const string Member = "errorsight.member";
+    public const string CollectionType = "errorsight.collection.type";
+    public const string CollectionCount = "errorsight.collection.count";
+    public const string CollectionEmpty = "errorsight.collection.empty";
+
+    // ── Event attributes: values (DataCapture.Values only, masked) ──────────
+    public const string ExceptionMessage = "exception.message";
+    /// <summary>JSON object of the (masked) values of the expressions involved in the failure.</summary>
+    public const string Values = "errorsight.values";
     public const string MissingKey = "errorsight.missing_key";
-    public const string Collection = "errorsight.collection";
     public const string Index = "errorsight.index";
 }
 
@@ -56,8 +75,8 @@ public static class ActivityDiagnostics
     };
 
     /// <summary>
-    /// Adds the <c>errorsight.cause.*</c> span attributes and one
-    /// <c>errorsight.exception.diagnosed</c> event to <paramref name="activity"/>.
+    /// Adds the <c>errorsight.cause.*</c> span attributes and one <c>errorsight.exception.diagnosed</c> event to
+    /// <paramref name="activity"/>. Only what <see cref="ExceptionDiagnostics.DataCapture"/> allows is written.
     /// </summary>
     public static void Apply(Activity activity, ExceptionDiagnostics d)
     {
@@ -70,17 +89,25 @@ public static class ActivityDiagnostics
         if (location is not null) activity.SetTag(ErrorSightSemanticConventions.CauseLocation, location);
         if (method is not null) activity.SetTag(ErrorSightSemanticConventions.CauseMethod, method);
 
+        var level = d.DataCapture;
         var tags = new ActivityTagsCollection
         {
             [ErrorSightSemanticConventions.ExceptionType] = d.FullTypeName,
-            [ErrorSightSemanticConventions.ExceptionMessage] = d.Message,
+            [ErrorSightSemanticConventions.DataCapture] = level.ToString().ToLowerInvariant(),
         };
 
+        // Structure: names, types and locations, no application data.
         AddIfPresent(tags, ErrorSightSemanticConventions.NullExpression, d.NullExpression);
         if (d.NullExpression is not null)
             tags[ErrorSightSemanticConventions.NullChain] = string.Join(" → ", CapturedValuesResolver.SplitPath(d.NullExpression));
         if (d.NullCandidates is { Length: > 0 } candidates)
             tags[ErrorSightSemanticConventions.NullCandidates] = candidates;
+        if (d.NullOrigin is { } origin)
+        {
+            tags[ErrorSightSemanticConventions.OriginExpression] = origin.Expression;
+            tags[ErrorSightSemanticConventions.OriginVariable] = origin.Variable;
+            if (origin.Line is { } originLine) tags[ErrorSightSemanticConventions.OriginLine] = originLine;
+        }
         AddIfPresent(tags, ErrorSightSemanticConventions.FailingExpression, d.FailingExpression);
         AddIfPresent(tags, ErrorSightSemanticConventions.SourceFile, d.SourceFileShort);
         if (d.Line is { } line) tags[ErrorSightSemanticConventions.SourceLine] = line;
@@ -88,13 +115,36 @@ public static class ActivityDiagnostics
         AddIfPresent(tags, ErrorSightSemanticConventions.Cause, d.PossibleCause);
         AddIfPresent(tags, ErrorSightSemanticConventions.Suggestion, d.Suggestion);
         AddIfPresent(tags, ErrorSightSemanticConventions.Parameter, d.ParameterName);
-        AddIfPresent(tags, ErrorSightSemanticConventions.MissingKey, d.MissingKey);
-        AddIfPresent(tags, ErrorSightSemanticConventions.Collection, d.CollectionName);
-        if (d.RequestedIndex is { } index) tags[ErrorSightSemanticConventions.Index] = index;
-        if (d.Values.Count > 0)
+        AddIfPresent(tags, ErrorSightSemanticConventions.CollectionName, d.CollectionName);
+
+        // Metadata: types and counts, never the values themselves.
+        if (level >= Options.DataCapture.Metadata)
         {
-            try { tags[ErrorSightSemanticConventions.Values] = JsonSerializer.Serialize(d.Values, JsonOptions); }
-            catch { /* unserialisable value: skip */ }
+            if (d.NullExpression is not null)
+            {
+                AddIfPresent(tags, ErrorSightSemanticConventions.ObjectType, d.NullType);
+                tags[ErrorSightSemanticConventions.ObjectNull] = true;
+                tags[ErrorSightSemanticConventions.Member] = CapturedValuesResolver.SplitPath(d.NullExpression)[^1];
+            }
+            AddIfPresent(tags, ErrorSightSemanticConventions.CollectionType, d.CollectionType);
+            if (d.CollectionLength is { } count)
+            {
+                tags[ErrorSightSemanticConventions.CollectionCount] = count;
+                tags[ErrorSightSemanticConventions.CollectionEmpty] = count == 0;
+            }
+        }
+
+        // Values: only when the application opted in (already masked).
+        if (level == Options.DataCapture.Values)
+        {
+            AddIfPresent(tags, ErrorSightSemanticConventions.ExceptionMessage, d.Message);
+            AddIfPresent(tags, ErrorSightSemanticConventions.MissingKey, d.MissingKey);
+            if (d.RequestedIndex is { } index) tags[ErrorSightSemanticConventions.Index] = index;
+            if (d.Values.Count > 0)
+            {
+                try { tags[ErrorSightSemanticConventions.Values] = JsonSerializer.Serialize(d.Values, JsonOptions); }
+                catch { /* unserialisable value: skip */ }
+            }
         }
 
         activity.AddEvent(new ActivityEvent(ErrorSightSemanticConventions.DiagnosedEvent, tags: tags));

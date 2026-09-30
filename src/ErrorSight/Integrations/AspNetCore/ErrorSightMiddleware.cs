@@ -79,7 +79,7 @@ public sealed class ErrorSightMiddleware
                 ["ErrorSight.Method"] = diagnostics.Method ?? string.Empty,
                 ["ErrorSight.NullExpression"] = diagnostics.NullExpression ?? string.Empty,
                 ["ErrorSight.PossibleCause"] = diagnostics.PossibleCause ?? string.Empty,
-                ["ErrorSight.Values"] = JsonSerializer.Serialize(diagnostics.Values),
+                ["ErrorSight.Values"] = diagnostics.Values.Count > 0 ? JsonSerializer.Serialize(diagnostics.Values) : string.Empty,
                 ["ErrorSight.CorrelationId"] = diagnostics.CorrelationId ?? string.Empty
             }))
             {

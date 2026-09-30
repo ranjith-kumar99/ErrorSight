@@ -18,13 +18,14 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Enables ErrorSight. That is the only call your application needs:
     /// exceptions are detected automatically and the active OpenTelemetry span (<c>Activity</c>) is
-    /// enriched with the root cause — the null expression, masked runtime values and the source location.
+    /// enriched with the root cause: the null expression, where it came from and the source location.
+    /// No application data is captured unless you opt in with <see cref="ErrorSightOptions.DataCapture"/>.
     ///
     /// <code>
     ///   builder.Services.AddOpenTelemetry().WithTracing(...);
     ///   builder.Services.AddErrorSight();
     ///   // or with options:
-    ///   builder.Services.AddErrorSight(o => o.Masking.Mode = MaskingMode.All);
+    ///   builder.Services.AddErrorSight(o => o.DataCapture = DataCapture.Values);   // opt in to values (masked)
     /// </code>
     /// </summary>
     public static IServiceCollection AddErrorSight(

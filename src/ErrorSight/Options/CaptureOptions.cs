@@ -1,8 +1,14 @@
 namespace ErrorSight.Options;
 
-/// <summary>Limits for runtime value capture. The defaults keep capture cheap and bounded.</summary>
+/// <summary>Limits for capture at throw time. The defaults keep capture cheap and bounded.</summary>
 public sealed class CaptureOptions
 {
+    /// <summary>
+    /// Record state in instrumented frames when exceptions pass through them. Set to false to switch capture off at
+    /// runtime without rebuilding; the diagnosis then relies on the stack trace alone. Default: true.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
     /// <summary>Instrumented frames captured per exception, innermost first. Default: 5.</summary>
     public int MaxFramesPerException { get; set; } = 5;
 
@@ -12,10 +18,13 @@ public sealed class CaptureOptions
     /// <summary>Members captured per object. Default: 20.</summary>
     public int MaxMembersPerObject { get; set; } = 20;
 
-    /// <summary>Elements captured per collection (the full count is always reported). Default: 5.</summary>
+    /// <summary>
+    /// Elements walked per collection. The count itself is reported from
+    /// <see cref="DataCapture.Metadata"/> upwards. Default: 5.
+    /// </summary>
     public int MaxCollectionItems { get; set; } = 5;
 
-    /// <summary>Longer strings are truncated. Default: 256.</summary>
+    /// <summary>Longer strings are truncated (<see cref="DataCapture.Values"/>). Default: 256.</summary>
     public int MaxStringLength { get; set; } = 256;
 
     /// <summary>
@@ -25,8 +34,8 @@ public sealed class CaptureOptions
     public int MaxCapturesPerSecond { get; set; } = 200;
 
     /// <summary>
-    /// Also capture private fields and non-public auto-properties. Default: false — only public
-    /// auto-properties and public fields are captured.
+    /// Also capture private fields and non-public auto-properties. Default: false. Only public auto-properties
+    /// and public fields are captured.
     /// </summary>
     public bool IncludePrivateFields { get; set; }
 

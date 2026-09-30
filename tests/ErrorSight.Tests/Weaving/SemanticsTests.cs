@@ -118,6 +118,7 @@ public sealed class SemanticsTests
     [Fact]
     public void CapturedValues_AreTheStateAtThrowTime_BeforeFinallyRuns()
     {
+        Diagnose.Options(o => o.DataCapture = ErrorSight.Options.DataCapture.Values);
         var thrown = Record.Exception(() => new OrderService().StateBeforeFinally(Build.OrderWithoutAddress()))!;
 
         ErrorSightRuntime.TryGetCapturedFrames(thrown, out var frames).Should().BeTrue();

@@ -14,12 +14,12 @@ public sealed class MaskingTests
     private static CapturedValue Root(ExceptionDiagnostics d, string name) =>
         d.Frames[0].Values.Single(v => v.Name == name);
 
-    // ── Default: sensitive names ─────────────────────────────────────────────
+    // ── Sensitive names (once values are opted in) ──────────────────────────
 
     [Fact]
     public void Default_SensitiveParameter_IsMasked()
     {
-        var d = Diagnose.Run(() => _service.Login("jane", "hunter2"));
+        var d = Diagnose.Values(() => _service.Login("jane", "hunter2"));
 
         d.Text("password").Should().Be("***");
         Root(d, "password").IsMasked.Should().BeTrue();
@@ -29,24 +29,23 @@ public sealed class MaskingTests
     [Fact]
     public void Default_SensitiveMembers_AreMasked_OthersVisible()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutAddress()));
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutAddress()));
         var customer = Root(d, "order").Member("Customer")!;
 
         customer.Member("Name")!.Value.Should().Be("\"Jane Doe\"");
         customer.Member("Email")!.Value.Should().Be("***");
         customer.Member("Password")!.Value.Should().Be("***");
-        customer.Member("Notes")!.Value.Should().Be("***", "[Sensitive] members are masked");
         customer.Member("Address")!.IsNull.Should().BeTrue("null-ness is never masked");
     }
 
     [Fact]
-    public void Default_SensitiveTypeAndApiKey_AreMasked()
+    public void Default_CardNumberAndApiKey_AreMasked()
     {
-        var card = new PaymentCard { Number = "4111111111111111", Holder = "Jane" };
-        var d = Diagnose.Run(() => _service.Charge(card, "sk_live_12345678", new Customer()));
+        var card = new PaymentCard { CardNumber = "4111111111111111", Holder = "Jane" };
+        var d = Diagnose.Values(() => _service.Charge(card, "sk_live_12345678", new Customer()));
 
-        d.Text("card").Should().Be("***", "PaymentCard is [Sensitive]");
-        Root(d, "card").Members.Should().BeNull("a masked object is not walked");
+        Root(d, "card").Member("CardNumber")!.Value.Should().Be("***");
+        Root(d, "card").Member("Holder")!.Value.Should().Be("\"Jane\"");
         d.Text("apiKey").Should().Be("***");
         d.Text("amount").Should().Be("12.5");
         d.NullExpression.Should().Be("customer.Address");
@@ -55,7 +54,7 @@ public sealed class MaskingTests
     [Fact]
     public void Default_SerializedDiagnostics_ContainNoSecrets()
     {
-        var d = Diagnose.Run(() => _service.Login("jane", "hunter2"));
+        var d = Diagnose.Values(() => _service.Login("jane", "hunter2"));
         var json = new ErrorSight.Formatting.JsonExceptionFormatter().Format(d);
         var text = new ErrorSight.Formatting.TextExceptionFormatter().Format(d);
 
@@ -68,7 +67,7 @@ public sealed class MaskingTests
     [Fact]
     public void ModeAll_OnlyTypesAndNullness_AndDiagnosisStillWorks()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutAddress()), o => o.Masking.Mode = MaskingMode.All);
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutAddress()), o => o.Masking.Mode = MaskingMode.All);
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Values["order.Customer.Address"].Should().BeNull();
@@ -84,14 +83,14 @@ public sealed class MaskingTests
     [Fact]
     public void ModeNone_ShowsEverything()
     {
-        var d = Diagnose.Run(() => _service.Login("jane", "hunter2"), o => o.Masking.Mode = MaskingMode.None);
+        var d = Diagnose.Values(() => _service.Login("jane", "hunter2"), o => o.Masking.Mode = MaskingMode.None);
         d.Text("password").Should().Be("\"hunter2\"");
     }
 
     [Fact]
     public void ModeAll_MasksKeyNotFoundKeyInMessage()
     {
-        var d = Diagnose.Run(() => _service.PriceOf("secret-sku"), o => o.Masking.Mode = MaskingMode.All);
+        var d = Diagnose.Values(() => _service.PriceOf("secret-sku"), o => o.Masking.Mode = MaskingMode.All);
 
         d.MissingKey.Should().Be("***");
         d.Message.Should().NotContain("SECRET-SKU");
@@ -102,19 +101,9 @@ public sealed class MaskingTests
     // ── Styles and customisation ─────────────────────────────────────────────
 
     [Fact]
-    public void HashStyle_IsDeterministic()
-    {
-        var first = Diagnose.Run(() => _service.Login("jane", "hunter2"), o => o.Masking.Style = MaskStyle.Hash);
-        var second = Diagnose.Run(() => _service.Login("jane", "hunter2"), o => o.Masking.Style = MaskStyle.Hash);
-
-        first.Text("password").Should().MatchRegex("^sha256:[0-9a-f]{8}$");
-        first.Text("password").Should().Be(second.Text("password"));
-    }
-
-    [Fact]
     public void PartialStyle_KeepsLastFourCharacters()
     {
-        var d = Diagnose.Run(() => _service.Charge(new PaymentCard(), "sk_live_12345678", new Customer()),
+        var d = Diagnose.Values(() => _service.Charge(new PaymentCard(), "sk_live_12345678", new Customer()),
             o => o.Masking.Style = MaskStyle.Partial);
         d.Text("apiKey").Should().Be("***5678");
     }
@@ -122,14 +111,14 @@ public sealed class MaskingTests
     [Fact]
     public void CustomSensitiveName_IsMasked()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutCity()), o => o.Masking.SensitiveNames.Add("street"));
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutCity()), o => o.Masking.SensitiveNames.Add("street"));
         Root(d, "order").Member("Customer")!.Member("Address")!.Member("Street")!.Value.Should().Be("***");
     }
 
     [Fact]
     public void ShouldMaskPredicate_IsApplied()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutAddress()),
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutAddress()),
             o => o.Masking.ShouldMask = ctx => ctx.Path == "order.Id");
 
         Root(d, "order").Member("Id")!.Value.Should().Be("***");
@@ -139,7 +128,7 @@ public sealed class MaskingTests
     [Fact]
     public void CustomRedactor_IsUsed()
     {
-        var d = Diagnose.Run(() => _service.Login("jane", "hunter2"), o => o.Masking.Redactor = v => $"<{v.Length} chars>");
+        var d = Diagnose.Values(() => _service.Login("jane", "hunter2"), o => o.Masking.Redactor = v => $"<{v.Length} chars>");
         d.Text("password").Should().Be("<7 chars>");
     }
 

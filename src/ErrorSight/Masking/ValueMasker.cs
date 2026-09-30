@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
-using System.Reflection;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace ErrorSight.Masking;
@@ -9,15 +7,6 @@ namespace ErrorSight.Masking;
 /// <summary>Applies <see cref="MaskingOptions"/> to names and values.</summary>
 internal sealed class ValueMasker
 {
-    private static readonly HashSet<string> SensitiveAttributeNames = new(StringComparer.Ordinal)
-    {
-        "SensitiveAttribute",
-        "SensitiveDataAttribute",
-        "PersonalDataAttribute",
-        "ProtectedPersonalDataAttribute",
-    };
-
-    private static readonly ConditionalWeakTable<Type, StrongBox<bool>> SensitiveTypes = new();
     private static readonly ConditionalWeakTable<MaskingOptions, NameCache> NameCaches = new();
 
     private readonly MaskingOptions _options;
@@ -29,7 +18,7 @@ internal sealed class ValueMasker
     public bool MaskMessages => _options.MaskExceptionMessages || _options.Mode == MaskingMode.All;
 
     /// <summary>Decides whether a value must be masked.</summary>
-    public bool ShouldMask(string path, string name, Type? valueType, bool declaredSensitive)
+    public bool ShouldMask(string path, string name, Type? valueType)
     {
         switch (_options.Mode)
         {
@@ -39,8 +28,7 @@ internal sealed class ValueMasker
                 return true;
         }
 
-        if (declaredSensitive || IsSensitiveName(name)) return true;
-        if (valueType is not null && IsSensitiveType(valueType)) return true;
+        if (IsSensitiveName(name)) return true;
 
         if (_options.ShouldMask is { } predicate)
         {
@@ -100,45 +88,15 @@ internal sealed class ValueMasker
 
         return _options.Style switch
         {
-            MaskStyle.Hash => "sha256:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)))[..8].ToLowerInvariant(),
             MaskStyle.Partial => raw.Length >= 8 ? "***" + raw[^4..] : "***",
             _ => "***",
         };
     }
 
-    public static bool HasSensitiveAttribute(MemberInfo member)
-    {
-        try
-        {
-            foreach (var data in member.GetCustomAttributesData())
-            {
-                if (IsSensitiveAttribute(data.AttributeType)) return true;
-            }
-        }
-        catch
-        {
-            // Attribute metadata unavailable: treat as not annotated.
-        }
-        return false;
-    }
-
-    public static bool IsSensitiveType(Type type) =>
-        SensitiveTypes.GetValue(type, static t => new StrongBox<bool>(HasSensitiveAttribute(t))).Value;
-
     private sealed class NameCache
     {
         public int Version = -1;
         public readonly ConcurrentDictionary<string, bool> Results = new(StringComparer.Ordinal);
-    }
-
-    private static bool IsSensitiveAttribute(Type attributeType)
-    {
-        if (SensitiveAttributeNames.Contains(attributeType.Name)) return true;
-        for (var current = attributeType.BaseType; current is not null; current = current.BaseType)
-        {
-            if (current.Name == "DataClassificationAttribute") return true;
-        }
-        return false;
     }
 
     /// <summary>Splits an identifier into lower-case words: <c>XApiKey_value</c> → x, api, key, value.</summary>

@@ -8,6 +8,9 @@ namespace ErrorSight.Weaver;
 /// <summary>An instruction that dereferences <see cref="Receiver"/> (throws NullReferenceException if it is null).</summary>
 internal sealed record AccessRecord(Instruction Instruction, AccessKind Kind, string Receiver, string Result, string? Index);
 
+/// <summary>A store of <see cref="Value"/> into the named local <see cref="Variable"/>.</summary>
+internal sealed record AssignmentRecord(Instruction Instruction, string Variable, string Value);
+
 /// <summary>
 /// Reconstructs source-like expressions (e.g. <c>order.Customer.Address</c>) for every instruction that
 /// dereferences an object, by simulating the IL evaluation stack symbolically within each basic block.
@@ -15,6 +18,9 @@ internal sealed record AccessRecord(Instruction Instruction, AccessKind Kind, st
 /// At runtime the throw site's IL offset (or source line) selects the candidate accesses, and the captured
 /// values decide which receiver was actually null. Precision is best-effort: anything the simulation cannot
 /// name becomes "?" and is dropped.
+///
+/// Stores into named locals are recorded too (<c>address = customer.Address</c>), so a null local can be traced
+/// back to the expression it came from.
 /// </summary>
 internal static class DereferenceAnalyzer
 {
@@ -24,10 +30,11 @@ internal static class DereferenceAnalyzer
     private const string Closure = "\u0001closure";
     private const int MaxExpressionLength = 200;
 
-    public static List<AccessRecord> Analyze(MethodDefinition method, MethodShape shape)
+    public static (List<AccessRecord> Accesses, List<AssignmentRecord> Assignments) Analyze(MethodDefinition method, MethodShape shape)
     {
         var body = method.Body;
         var records = new List<AccessRecord>();
+        var assignments = new List<AssignmentRecord>();
 
         var localNames = SlotCollector.NamedLocals(method).ToDictionary(x => x.Variable, x => x.Names);
 
@@ -92,6 +99,13 @@ internal static class DereferenceAnalyzer
             records.Add(new AccessRecord(instruction, kind, receiver, Clean(result), index is null ? null : Clean(index)));
         }
 
+        void RecordAssignment(Instruction instruction, string variable, string value)
+        {
+            if (value != "null" && !CanBeNull(value)) return;
+            if (value == variable || value.Contains(Closure, StringComparison.Ordinal)) return;
+            assignments.Add(new AssignmentRecord(instruction, variable, value));
+        }
+
         foreach (var instruction in body.Instructions)
         {
             if (handlerStarts.Contains(instruction))
@@ -126,7 +140,14 @@ internal static class DereferenceAnalyzer
                 {
                     var variable = (VariableDefinition)instruction.Operand;
                     var value = Pop();
-                    if (!localNames.ContainsKey(variable) && value != "null") temps[variable] = TempValue(variable, value);
+                    if (!localNames.ContainsKey(variable))
+                    {
+                        if (value != "null") temps[variable] = TempValue(variable, value);
+                    }
+                    else if (LocalName(localNames, variable, instruction) is { } name)
+                    {
+                        RecordAssignment(instruction, name, value);
+                    }
                     break;
                 }
 
@@ -157,6 +178,10 @@ internal static class DereferenceAnalyzer
                     var receiver = Pop();
                     if (receiver == Closure && value != "null" && CecilHelpers.SourceNameOfField(field.Name) is null)
                         fieldTemps[field.Name] = TempValue(field.Name, value);
+                    // Hoisted locals of async/iterator methods and variables captured by lambdas live in fields.
+                    if (receiver == Closure && CecilHelpers.SourceNameOfField(field.Name) is { } hoisted && hoisted != "this" &&
+                        !CecilHelpers.IsDisplayClass(field.FieldType))
+                        RecordAssignment(instruction, hoisted, value);
                     if (receiver != Closure && !IsValueType(field.DeclaringType))
                         Record(instruction, AccessKind.Member, receiver, Member(receiver, FieldMemberName(field)));
                     break;
@@ -236,13 +261,22 @@ internal static class DereferenceAnalyzer
                     break;
                 }
 
+                case Code.Isinst:
+                {
+                    // `x as T` is a common source of nulls, so it is kept visible: (x as T).Member
+                    var value = Pop();
+                    Push(value is Unknown or Closure or Reassigned
+                        ? Unknown
+                        : $"({value} as {CecilHelpers.FriendlyTypeName((TypeReference)instruction.Operand)})");
+                    break;
+                }
+
                 // Reading through a by-ref (ref/out/in parameters, ref locals) yields the variable itself.
                 case Code.Ldobj:
                 case Code.Ldind_Ref: case Code.Ldind_I: case Code.Ldind_I1: case Code.Ldind_I2: case Code.Ldind_I4:
                 case Code.Ldind_I8: case Code.Ldind_U1: case Code.Ldind_U2: case Code.Ldind_U4: case Code.Ldind_R4:
                 case Code.Ldind_R8:
                 case Code.Castclass:
-                case Code.Isinst:
                 case Code.Box:
                 case Code.Conv_I: case Code.Conv_I1: case Code.Conv_I2: case Code.Conv_I4: case Code.Conv_I8:
                 case Code.Conv_U: case Code.Conv_U1: case Code.Conv_U2: case Code.Conv_U4: case Code.Conv_U8:
@@ -302,7 +336,7 @@ internal static class DereferenceAnalyzer
             }
         }
 
-        return records;
+        return (records, assignments);
 
         void SimulateCall(Instruction instruction, MethodReference callee)
         {
@@ -422,6 +456,15 @@ internal static class DereferenceAnalyzer
         receiver == Unknown || receiver == Closure ? Unknown : $"{receiver}[{(index == Closure || index == Unknown ? Reassigned : index)}]";
 
     private static string Clean(string expression) => expression.Replace(Closure, Unknown);
+
+    /// <summary>Values that can be null: not a literal, an object creation, or something unnamed.</summary>
+    private static bool CanBeNull(string value)
+    {
+        if (value is Unknown or Closure or Reassigned or "this") return false;
+        if (value.StartsWith("new ", StringComparison.Ordinal)) return false;
+        var first = value[0];
+        return first != '"' && !char.IsDigit(first) && first != '-';
+    }
 
     /// <summary>Receivers worth reporting: named, non-literal, and possibly null.</summary>
     private static bool IsNameable(string receiver)

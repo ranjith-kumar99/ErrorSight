@@ -21,8 +21,6 @@ internal enum SlotKind : byte
 internal enum SlotFlags : byte
 {
     None = 0,
-    /// <summary>Declared with a sensitive-data attribute ([Sensitive], [PersonalData], ...).</summary>
-    Sensitive = 1,
     /// <summary>The value is a compiler-generated closure; its fields are the real variables.</summary>
     Closure = 2,
 }
@@ -40,6 +38,8 @@ internal sealed class WovenSlot
     public string Name = string.Empty;
     public SlotKind Kind;
     public SlotFlags Flags;
+    /// <summary>Declared type, e.g. <c>Address</c> — reported when the value is null (it has no runtime type).</summary>
+    public string TypeName = string.Empty;
     /// <summary>Only for locals: every name the slot has, with its IL scope. Null/empty = always in scope.</summary>
     public List<WovenLocalScope>? Scopes;
 }
@@ -75,6 +75,18 @@ internal sealed class WovenAccess
     public string? Index;
 }
 
+/// <summary>
+/// A store into a named local variable (or a hoisted local of a state machine), e.g. <c>address = customer.Address</c>.
+/// Explains where a null local came from.
+/// </summary>
+internal sealed class WovenAssignment
+{
+    public int Offset;
+    public string Variable = string.Empty;
+    /// <summary>Source-like expression of the stored value: <c>customer.Address</c>, <c>this.Find(…)</c> or <c>null</c>.</summary>
+    public string Value = string.Empty;
+}
+
 internal sealed class WovenMethod
 {
     public int Id;
@@ -87,13 +99,14 @@ internal sealed class WovenMethod
     /// these boundaries, so the real faulting instruction lies between the reported offset and the next one.
     /// </summary>
     public List<int> StackEmptyOffsets = new();
+    public List<WovenAssignment> Assignments = new();
 }
 
 internal static class WeaveMetadataSerializer
 {
     public const string ResourceName = "ErrorSight.Metadata.bin";
     private const int Magic = 0x444D5345; // "ESMD"
-    private const int Version = 2;
+    private const int Version = 3;
 
     public static void Write(Stream stream, IReadOnlyCollection<WovenMethod> methods)
     {
@@ -112,6 +125,7 @@ internal static class WeaveMetadataSerializer
                 w.Write(s.Name);
                 w.Write((byte)s.Kind);
                 w.Write((byte)s.Flags);
+                w.Write(s.TypeName);
                 var scopes = s.Scopes ?? new List<WovenLocalScope>();
                 w.Write(scopes.Count);
                 foreach (var sc in scopes)
@@ -141,6 +155,14 @@ internal static class WeaveMetadataSerializer
 
             w.Write(m.StackEmptyOffsets.Count);
             foreach (var offset in m.StackEmptyOffsets) w.Write(offset);
+
+            w.Write(m.Assignments.Count);
+            foreach (var a in m.Assignments)
+            {
+                w.Write(a.Offset);
+                w.Write(a.Variable);
+                w.Write(a.Value);
+            }
         }
     }
 
@@ -164,6 +186,7 @@ internal static class WeaveMetadataSerializer
                     Name = r.ReadString(),
                     Kind = (SlotKind)r.ReadByte(),
                     Flags = (SlotFlags)r.ReadByte(),
+                    TypeName = r.ReadString(),
                 };
                 var scopeCount = r.ReadInt32();
                 if (scopeCount > 0)
@@ -196,6 +219,10 @@ internal static class WeaveMetadataSerializer
 
             var emptyCount = r.ReadInt32();
             for (var j = 0; j < emptyCount; j++) m.StackEmptyOffsets.Add(r.ReadInt32());
+
+            var assignmentCount = r.ReadInt32();
+            for (var j = 0; j < assignmentCount; j++)
+                m.Assignments.Add(new WovenAssignment { Offset = r.ReadInt32(), Variable = r.ReadString(), Value = r.ReadString() });
 
             result[m.Id] = m;
         }

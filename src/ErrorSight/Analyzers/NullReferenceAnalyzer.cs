@@ -13,13 +13,20 @@ public sealed class NullReferenceAnalyzer : IExceptionAnalyzer
 
     public void Enrich(ExceptionDiagnostics diagnostics, Exception exception)
     {
-        if (diagnostics.FailingExpression is null && diagnostics.SourceFile is not null)
-            diagnostics.FailingExpression = StackTraceParser.ReadFailingLine(exception);
+        diagnostics.FailingExpression ??= diagnostics.FailingSourceLine;
 
         if (diagnostics.NullExpression is null && diagnostics.FailingExpression is not null)
             diagnostics.NullExpression = TryInferNullExpression(diagnostics.FailingExpression, diagnostics.Values);
 
-        if (diagnostics.NullExpression is not null)
+        if (diagnostics.NullExpression is { } expression && diagnostics.NullOrigin is { } origin && origin.Variable == expression)
+        {
+            var line = origin.Line is { } l ? $" on line {l}" : string.Empty;
+            diagnostics.PossibleCause = $"{expression} is null. It was assigned {origin.Expression}{line}.";
+            diagnostics.Suggestion = origin.Expression == "null"
+                ? $"Assign {expression} a value before it is used, or guard it before accessing its members."
+                : $"Check whether {origin.Expression} can be null before it is assigned to {expression}, or guard {expression} before accessing its members.";
+        }
+        else if (diagnostics.NullExpression is not null)
         {
             diagnostics.PossibleCause = $"{diagnostics.NullExpression} is null.";
             diagnostics.Suggestion = $"Check whether {diagnostics.NullExpression} is initialised before accessing its members.";

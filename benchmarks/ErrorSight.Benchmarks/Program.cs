@@ -33,10 +33,15 @@ var allocPlain = Allocated(throws, () => Catch(() => plain.Outer(broken)));
 var allocWoven = Allocated(throws, () => Catch(() => woven.Outer(broken)));
 Console.WriteLine($"Throw+catch (3 frames)    plain {plainThrow / 1000,8:F2} µs   instrumented {wovenThrow / 1000,8:F2} µs   (+{(wovenThrow - plainThrow) / 1000:F2} µs, +{(allocWoven - allocPlain) / 1024.0:F1} KB)");
 
-options.CaptureRuntimeValues = false;
+options.DataCapture = DataCapture.Values;
+var valuesThrow = Measure(throws, () => Catch(() => woven.Outer(broken)));
+Console.WriteLine($"  with DataCapture.Values:                   {valuesThrow / 1000,8:F2} µs");
+options.DataCapture = DataCapture.None;
+
+options.Capture.Enabled = false;
 var filtersOnly = Measure(throws, () => Catch(() => woven.Outer(broken)));
 Console.WriteLine($"  filters only (capture disabled):          {filtersOnly / 1000,8:F2} µs");
-options.CaptureRuntimeValues = true;
+options.Capture.Enabled = true;
 
 options.Capture.MaxCapturesPerSecond = 200;
 var limitedThrow = Measure(throws, () => Catch(() => woven.Outer(broken)));

@@ -16,7 +16,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void NullAddress_IsIdentified()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutAddress()));
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutAddress()));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.FailingExpression.Should().Be("order.Customer.Address.City.Name");
@@ -29,7 +29,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void NullCity_IsIdentified()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutCity()));
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutCity()));
 
         d.NullExpression.Should().Be("order.Customer.Address.City");
         d.Values["order.Customer.Address.City"].Should().BeNull();
@@ -46,7 +46,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void NullParameter_IsIdentified()
     {
-        var d = Diagnose.Run(() => _service.GetCity(null!));
+        var d = Diagnose.Values(() => _service.GetCity(null!));
         d.NullExpression.Should().Be("order");
         d.Values["order"].Should().BeNull();
     }
@@ -54,7 +54,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void NullLocal_IsIdentified_AndOtherValuesCaptured()
     {
-        var d = Diagnose.Run(() => _service.Login("  jane ", "hunter2"));
+        var d = Diagnose.Values(() => _service.Login("  jane ", "hunter2"));
 
         d.NullExpression.Should().Be("sessionToken");
         d.Values["sessionToken"].Should().BeNull();
@@ -75,7 +75,7 @@ public sealed class AutoCaptureTests
     public void StructMethod_ReportsThisMember()
     {
         var point = new Point { X = 3, Label = null! };
-        var d = Diagnose.Run(() => point.LabelLength());
+        var d = Diagnose.Values(() => point.LabelLength());
 
         d.NullExpression.Should().Be("this.Label");
         d.Text("this").Should().Contain("X = 3");
@@ -85,7 +85,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void Constructor_IsInstrumented_AfterBaseCall()
     {
-        var d = Diagnose.Run(() => new Invoice(new Order { Id = 9 }, copies: 2));
+        var d = Diagnose.Values(() => new Invoice(new Order { Id = 9 }, copies: 2));
 
         d.NullExpression.Should().Be("order.Customer");
         d.Text("copies").Should().Be("2");
@@ -97,7 +97,7 @@ public sealed class AutoCaptureTests
     {
         var counter = 0;
         string? result = null;
-        var d = Diagnose.Run(() => _service.Parse("abc".AsSpan(), ref counter, out result));
+        var d = Diagnose.Values(() => _service.Parse("abc".AsSpan(), ref counter, out result));
 
         d.NullExpression.Should().Be("result");
         d.Text("counter").Should().Be("1");
@@ -109,7 +109,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public async Task AsyncMethod_IsIdentified()
     {
-        var d = await Diagnose.RunAsync(() => _service.GetCityAsync(Build.OrderWithoutAddress()));
+        var d = await Diagnose.ValuesAsync(() => _service.GetCityAsync(Build.OrderWithoutAddress()));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Frames[0].Method.Should().Be("OrderService.GetCityAsync");
@@ -122,7 +122,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public async Task AsyncCaller_FramesAreCaptured()
     {
-        var d = await Diagnose.RunAsync(() => _service.ProcessOrderAsync(Build.OrderWithoutAddress()));
+        var d = await Diagnose.ValuesAsync(() => _service.ProcessOrderAsync(Build.OrderWithoutAddress()));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Frames.Select(f => f.Method).Should().StartWith(new[] { "OrderService.GetCityAsync", "OrderService.ProcessOrderAsync" });
@@ -132,7 +132,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void SyncCaller_FramesAreCaptured()
     {
-        var d = Diagnose.Run(() => _service.ProcessOrder(Build.OrderWithoutAddress()));
+        var d = Diagnose.Values(() => _service.ProcessOrder(Build.OrderWithoutAddress()));
 
         d.Frames.Select(f => f.Method).Should().StartWith(new[] { "OrderService.GetCity", "OrderService.ProcessOrder" });
         d.Frames[1].Values.Should().Contain(v => v.Name == "orderId" && v.Value == "1837");
@@ -145,7 +145,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void Lambda_CapturedVariablesAreVisible()
     {
-        var d = Diagnose.Run(() => _service.ViaLambda(Build.OrderWithoutAddress()));
+        var d = Diagnose.Values(() => _service.ViaLambda(Build.OrderWithoutAddress()));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Text("prefix").Should().Be("\"city:\"");
@@ -154,7 +154,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void LocalFunction_CapturedVariablesAreVisible()
     {
-        var d = Diagnose.Run(() => _service.ViaLocalFunction(Build.OrderWithoutAddress()));
+        var d = Diagnose.Values(() => _service.ViaLocalFunction(Build.OrderWithoutAddress()));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Text("suffix").Should().Be("\"!\"");
@@ -164,7 +164,7 @@ public sealed class AutoCaptureTests
     public void Iterator_IsIdentified()
     {
         var customers = new[] { new Customer { Name = "No address" } };
-        var d = Diagnose.Run(() => _service.CityNames(customers).ToList());
+        var d = Diagnose.Values(() => _service.CityNames(customers).ToList());
 
 #if DEBUG
         d.NullExpression.Should().Be("customer.Address");
@@ -192,7 +192,7 @@ public sealed class AutoCaptureTests
     public void GenericMethodOnGenericType_IsInstrumented()
     {
         var repository = new Repository<Customer>();
-        var d = Diagnose.Run(() => repository.Describe(new Customer(), 7, _ => null!));
+        var d = Diagnose.Values(() => repository.Describe(new Customer(), 7, _ => null!));
 
         d.NullExpression.Should().Be("text");
         d.Text("key").Should().Be("7");
@@ -201,7 +201,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void Recursion_CapturesInnermostFrameOnce()
     {
-        var d = Diagnose.Run(() => _service.Recurse(Build.OrderWithoutAddress(), 3));
+        var d = Diagnose.Values(() => _service.Recurse(Build.OrderWithoutAddress(), 3));
 
         d.NullExpression.Should().Be("order.Customer.Address");
         d.Frames.Should().ContainSingle(f => f.Method == "OrderService.Recurse");
@@ -213,7 +213,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void KeyNotFound_ShowsTheKeyVariable()
     {
-        var d = Diagnose.Run(() => _service.PriceOf("zz-9"));
+        var d = Diagnose.Values(() => _service.PriceOf("zz-9"));
 
         d.MissingKey.Should().Be("ZZ-9");
         d.Text("key").Should().Be("\"ZZ-9\"");
@@ -224,7 +224,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void IndexOutOfRange_ReportsCollectionIndexAndLength()
     {
-        var d = Diagnose.Run(() => _service.LineQuantity(Build.OrderWithoutAddress(), 5));
+        var d = Diagnose.Values(() => _service.LineQuantity(Build.OrderWithoutAddress(), 5));
 
         d.CollectionName.Should().BeOneOf("lines", "order.Lines.ToArray(…)");
         d.RequestedIndex.Should().Be(5);
@@ -235,7 +235,7 @@ public sealed class AutoCaptureTests
     [Fact]
     public void ListIndexer_ArgumentOutOfRange_ReportsCollectionAndIndex()
     {
-        var d = Diagnose.Run(() => _service.LineQuantityFromList(Build.OrderWithoutAddress(), 9));
+        var d = Diagnose.Values(() => _service.LineQuantityFromList(Build.OrderWithoutAddress(), 9));
 
         d.CollectionName.Should().BeOneOf("lines", "order.Lines");
         d.RequestedIndex.Should().Be(9);
@@ -246,7 +246,7 @@ public sealed class AutoCaptureTests
     public void GenericRepository_EmptyCollection()
     {
         var repository = new Repository<Customer>();
-        var d = Diagnose.Run(() => repository.Get(3), o => o.Capture.IncludePrivateFields = true);
+        var d = Diagnose.Values(() => repository.Get(3), o => o.Capture.IncludePrivateFields = true);
 
         d.CollectionName.Should().BeOneOf("items", "this._items");
         d.RequestedIndex.Should().Be(3);
@@ -287,9 +287,9 @@ public sealed class AutoCaptureTests
     }
 
     [Fact]
-    public void CaptureRuntimeValues_False_DisablesCapture()
+    public void CaptureDisabled_DisablesCapture()
     {
-        var d = Diagnose.Run(() => _service.GetCity(Build.OrderWithoutAddress()), o => o.CaptureRuntimeValues = false);
+        var d = Diagnose.Values(() => _service.GetCity(Build.OrderWithoutAddress()), o => o.Capture.Enabled = false);
 
         d.Frames.Should().BeEmpty();
         d.Values.Should().BeEmpty();

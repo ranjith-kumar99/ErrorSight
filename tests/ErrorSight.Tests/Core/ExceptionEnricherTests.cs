@@ -7,7 +7,7 @@ namespace ErrorSight.Tests.Core;
 
 public sealed class ExceptionEnricherTests
 {
-    private static ExceptionEnricher BuildEnricher() => new(
+    private static ExceptionEnricher BuildEnricher(DataCapture level = DataCapture.None) => new(
         new IExceptionAnalyzer[]
         {
             new NullReferenceAnalyzer(),
@@ -17,7 +17,7 @@ public sealed class ExceptionEnricherTests
             new InvalidOperationAnalyzer(),
             new AggregateExceptionAnalyzer()
         },
-        new ErrorSightOptions());
+        new ErrorSightOptions { DataCapture = level });
 
     // ── Basic identity ────────────────────────────────────────────────────────
 
@@ -30,10 +30,18 @@ public sealed class ExceptionEnricherTests
     }
 
     [Fact]
-    public void Enrich_SetsMessage()
+    public void Enrich_Default_DoesNotCaptureTheMessage()
+    {
+        var result = BuildEnricher().Enrich(new Exception("customer jane@example.com not found"));
+        result.Message.Should().BeNull("messages often contain application data");
+        result.DataCapture.Should().Be(DataCapture.None);
+    }
+
+    [Fact]
+    public void Enrich_Values_SetsMessage()
     {
         var ex = new Exception("hello world");
-        var result = BuildEnricher().Enrich(ex);
+        var result = BuildEnricher(DataCapture.Values).Enrich(ex);
         result.Message.Should().Be("hello world");
     }
 
@@ -61,8 +69,6 @@ public sealed class ExceptionEnricherTests
         var result = BuildEnricher().Enrich(ex);
         result.ParameterName.Should().Be("customer");
         result.NullExpression.Should().Be("customer");
-        result.Values.Should().ContainKey("customer");
-        result.Values["customer"].Should().BeNull();
     }
 
     [Fact]
@@ -84,7 +90,8 @@ public sealed class ExceptionEnricherTests
         catch (KeyNotFoundException ex) { caughtEx = ex; }
 
         caughtEx.Should().NotBeNull();
-        var result = BuildEnricher().Enrich(caughtEx!);
+        BuildEnricher().Enrich(caughtEx!).MissingKey.Should().BeNull("the key is application data");
+        var result = BuildEnricher(DataCapture.Values).Enrich(caughtEx!);
         result.MissingKey.Should().Be("missing-key");
     }
 
@@ -154,7 +161,8 @@ public sealed class ExceptionEnricherTests
         ex.Data["password"] = "hunter2";
         ex.Data["orderId"] = 42;
 
-        var result = BuildEnricher().Enrich(ex);
+        BuildEnricher().Enrich(ex).AdditionalData.Should().NotContainKey("orderId", "exception data is only captured with values");
+        var result = BuildEnricher(DataCapture.Values).Enrich(ex);
         result.AdditionalData["password"].Should().Be("***");
         result.AdditionalData["orderId"].Should().Be(42);
     }

@@ -43,7 +43,7 @@ internal sealed class MethodWeaver
         body.SimplifyMacros();
 
         // Analysis runs on the original IL (original offsets are still valid here).
-        var accesses = DereferenceAnalyzer.Analyze(_method, _shape);
+        var (accesses, assignments) = DereferenceAnalyzer.Analyze(_method, _shape);
         var slots = SlotCollector.Collect(_method, _shape);
 
         bool woven;
@@ -64,7 +64,7 @@ internal sealed class MethodWeaver
         if (!woven) return null;
 
         CecilHelpers.ComputeOffsets(body);
-        return BuildMetadata(body, slots, accesses);
+        return BuildMetadata(body, slots, accesses, assignments);
     }
 
     // ── Sync methods, iterators, lambdas ─────────────────────────────────────
@@ -271,7 +271,7 @@ internal sealed class MethodWeaver
         });
     }
 
-    private WovenMethod BuildMetadata(MethodBody body, List<CapturedSlot> slots, List<AccessRecord> accesses)
+    private WovenMethod BuildMetadata(MethodBody body, List<CapturedSlot> slots, List<AccessRecord> accesses, List<AssignmentRecord> assignments)
     {
         var codeSize = body.Instructions.Count == 0 ? 0 : body.Instructions[^1].Offset + body.Instructions[^1].GetSize();
         int Resolve(InstructionOffset offset) => offset.IsEndOfMethod ? codeSize : offset.Offset;
@@ -312,6 +312,16 @@ internal sealed class MethodWeaver
                 Receiver = access.Receiver,
                 Result = access.Result,
                 Index = access.Index,
+            });
+        }
+
+        foreach (var assignment in assignments)
+        {
+            metadata.Assignments.Add(new WovenAssignment
+            {
+                Offset = assignment.Instruction.Offset,
+                Variable = assignment.Variable,
+                Value = assignment.Value,
             });
         }
 

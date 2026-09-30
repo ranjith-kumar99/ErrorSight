@@ -8,14 +8,6 @@ internal static class CecilHelpers
 {
     private const string IgnoreAttributeName = "ErrorSightIgnoreAttribute";
 
-    private static readonly HashSet<string> SensitiveAttributeNames = new(StringComparer.Ordinal)
-    {
-        "SensitiveAttribute",
-        "SensitiveDataAttribute",
-        "PersonalDataAttribute",
-        "ProtectedPersonalDataAttribute",
-    };
-
     private static readonly Regex HoistedLocal = new(@"^<(?<name>[^>]+)>5__\d+$", RegexOptions.Compiled);
     private static readonly Regex GeneratedMethod = new(@"^<(?<outer>[^>]*)>(?<kind>[bg])__(?<inner>[^|]*)", RegexOptions.Compiled);
     private static readonly Regex StateMachineTypeName = new(@"^<(?<name>[^>]+)>d__\d+", RegexOptions.Compiled);
@@ -27,40 +19,6 @@ internal static class CecilHelpers
 
     public static bool HasAttribute(ICustomAttributeProvider provider, string fullName) =>
         provider.HasCustomAttributes && provider.CustomAttributes.Any(a => a.AttributeType.FullName == fullName);
-
-    /// <summary>
-    /// Recognises sensitive-data attributes by name so no package dependency is needed:
-    /// [Sensitive], [PersonalData], [ProtectedPersonalData] and any
-    /// Microsoft.Extensions.Compliance DataClassificationAttribute subclass.
-    /// </summary>
-    public static bool HasSensitiveAttribute(ICustomAttributeProvider provider)
-    {
-        if (!provider.HasCustomAttributes) return false;
-        foreach (var attribute in provider.CustomAttributes)
-        {
-            if (SensitiveAttributeNames.Contains(attribute.AttributeType.Name)) return true;
-            if (DerivesFrom(attribute.AttributeType, "DataClassificationAttribute")) return true;
-        }
-        return false;
-    }
-
-    private static bool DerivesFrom(TypeReference type, string baseName)
-    {
-        try
-        {
-            var current = type.Resolve()?.BaseType;
-            for (var depth = 0; current is not null && depth < 10; depth++)
-            {
-                if (current.Name == baseName) return true;
-                current = current.Resolve()?.BaseType;
-            }
-        }
-        catch
-        {
-            // Unresolvable base type: not sensitive by attribute.
-        }
-        return false;
-    }
 
     // ── Compiler-generated shapes ────────────────────────────────────────────
 
@@ -136,6 +94,53 @@ internal static class CecilHelpers
         parts.Reverse();
         return string.Join('.', parts);
     }
+
+    private static readonly Dictionary<string, string> Keywords = new(StringComparer.Ordinal)
+    {
+        ["System.String"] = "string", ["System.Int32"] = "int", ["System.Int64"] = "long", ["System.Int16"] = "short",
+        ["System.Byte"] = "byte", ["System.SByte"] = "sbyte", ["System.UInt32"] = "uint", ["System.UInt64"] = "ulong",
+        ["System.UInt16"] = "ushort", ["System.Boolean"] = "bool", ["System.Char"] = "char", ["System.Decimal"] = "decimal",
+        ["System.Double"] = "double", ["System.Single"] = "float", ["System.Object"] = "object",
+        ["System.IntPtr"] = "nint", ["System.UIntPtr"] = "nuint",
+    };
+
+    /// <summary>
+    /// C#-like name of a declared type — <c>int</c>, <c>int?</c>, <c>List&lt;Order&gt;</c>, <c>Order[]</c> — in the same
+    /// format the runtime uses for the types of captured values.
+    /// </summary>
+    public static string FriendlyTypeName(TypeReference type)
+    {
+        while (type is IModifierType modifier) type = modifier.ElementType;
+
+        switch (type)
+        {
+            case ByReferenceType byRef:
+                return FriendlyTypeName(byRef.ElementType);
+            case PinnedType pinned:
+                return FriendlyTypeName(pinned.ElementType);
+            case ArrayType array:
+                return FriendlyTypeName(array.ElementType) + "[" + new string(',', Math.Max(0, array.Rank - 1)) + "]";
+            case GenericParameter parameter:
+                return parameter.Name;
+            case GenericInstanceType generic:
+            {
+                var definition = generic.ElementType;
+                if (definition.FullName == "System.Nullable`1" && generic.GenericArguments.Count == 1)
+                    return FriendlyTypeName(generic.GenericArguments[0]) + "?";
+                var arguments = string.Join(", ", generic.GenericArguments.Select(FriendlyTypeName));
+                return $"{OuterPrefix(definition)}{StripArity(definition.Name)}<{arguments}>";
+            }
+        }
+
+        if (Keywords.TryGetValue(type.FullName, out var keyword)) return keyword;
+        if (type.Name.StartsWith("<>f__AnonymousType", StringComparison.Ordinal)) return "anonymous";
+        var name = StripArity(type.Name);
+        if (type.HasGenericParameters) name += "<" + string.Join(", ", type.GenericParameters.Select(p => p.Name)) + ">";
+        return OuterPrefix(type) + name;
+    }
+
+    private static string OuterPrefix(TypeReference type) =>
+        type.DeclaringType is { } outer && !IsCompilerGeneratedName(outer.Name) ? FriendlyTypeName(outer) + "." : string.Empty;
 
     public static string StripArity(string name)
     {

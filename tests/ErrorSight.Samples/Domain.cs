@@ -15,7 +15,7 @@ public sealed class Customer
     public string Name { get; set; } = "";
     public string Email { get; set; }
     public string Password { get; set; }
-    [Sensitive] public string Notes { get; set; }
+    public string Notes { get; set; }
     public Address Address { get; set; }
 }
 
@@ -32,10 +32,9 @@ public sealed class City
 
 public sealed record OrderLine(string Sku, int Quantity);
 
-[Sensitive]
 public sealed class PaymentCard
 {
-    public string Number { get; set; } = "";
+    public string CardNumber { get; set; } = "";
     public string Holder { get; set; } = "";
 }
 

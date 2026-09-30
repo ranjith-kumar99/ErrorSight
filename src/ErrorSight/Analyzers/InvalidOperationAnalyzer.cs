@@ -42,7 +42,7 @@ public sealed class InvalidOperationAnalyzer : IExceptionAnalyzer
         }
 
         // Try to identify the LINQ operation from the source line
-        var failingLine = StackTraceParser.ReadFailingLine(exception);
+        var failingLine = diagnostics.FailingSourceLine;
         if (failingLine is not null)
         {
             diagnostics.FailingExpression ??= failingLine;
