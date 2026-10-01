@@ -1,0 +1,113 @@
+name: Build, test and publish
+
+# Every push and pull request builds and tests the solution and packs ErrorSight.nupkg.
+# Pushing a version tag (v1.2.3) also publishes that version to nuget.org.
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.configuration }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The weaver behaves differently on optimized code, so both configurations are tested.
+        configuration: [ Debug, Release ]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore ErrorSight.sln
+
+      - name: Build
+        run: dotnet build ErrorSight.sln -c ${{ matrix.configuration }} --no-restore
+
+      - name: Test
+        run: >
+          dotnet test ErrorSight.sln -c ${{ matrix.configuration }} --no-build
+          --logger "trx;LogFileName=results.trx" --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.configuration }}
+          path: TestResults
+
+  pack:
+    name: Pack
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # v1.2.3 tag → 1.2.3; anything else → a CI prerelease such as 1.0.0-ci.42
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            base=$(grep -oPm1 '(?<=<Version>)[^<]+' src/ErrorSight/ErrorSight.csproj)
+            version="${base}-ci.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Package version: $version"
+
+      # The package embeds the weaver, so the whole solution is built before packing.
+      - name: Build
+        run: dotnet build ErrorSight.sln -c Release -p:Version=${{ steps.version.outputs.version }}
+
+      - name: Pack
+        run: dotnet pack src/ErrorSight/ErrorSight.csproj -c Release --no-build -p:Version=${{ steps.version.outputs.version }} -o artifacts
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: nuget
+          path: artifacts/*.nupkg
+
+  publish:
+    name: Publish to nuget.org
+    needs: pack
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: nuget
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nuget
+          path: artifacts
+
+      - name: Push
+        run: >
+          dotnet nuget push "artifacts/*.nupkg"
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
