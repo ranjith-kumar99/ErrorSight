@@ -18,3 +18,7 @@ packages/
 ## OS
 .DS_Store
 Thumbs.db
+
+## CI output
+TestResults/
+artifacts/
